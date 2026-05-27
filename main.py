@@ -149,7 +149,7 @@ def predict_from_query_params() -> dict[str, Any]:
 
 @app.route("/", methods=["GET", "POST"])
 def root():
-    if request.method == "POST" and not request.args:
+    if not request.args:
         return jsonify({"status": "running"})
 
     if request.args.get("api", "").lower() != "true":
