@@ -1,0 +1,77 @@
+factor_id,category,level,description,value,default_flag,order_form_service_id
+43,Turnaround Time,1,Less than or equal to 5 days,20,false,2
+44,Turnaround Time,2,Less than or equal to 10 days,12,false,2
+45,Turnaround Time,3,Less than or equal to 15 days,6,false,2
+46,Turnaround Time,4,Greater than or equal to 20 days,0,false,2
+47,Size,XS,Building SF <= 10000,0,false,2
+48,Size,S,Building SF <= 30000,3,false,2
+49,Size,M,Building SF <= 100000,5,false,2
+50,Size,L,Building SF <= 250000,8,false,2
+51,Size,XL,Building SF > 250000,12,false,2
+52,# of Stories,1,1 to 3,0,false,2
+53,# of Stories,2,4 to 10,3,false,2
+54,# of Stories,3,11+,5,false,2
+55,# of Buildings,1,1 to 2,5,false,2
+56,# of Buildings,2,3 to 5,10,false,2
+57,# of Buildings,3,6+,15,false,2
+58,Travel Difficulty,1,Easy,0,false,2
+59,Travel Difficulty,2,Moderate,15,false,2
+60,Travel Difficulty,3,Difficult,25,false,2
+61,Travel Difficulty,4,Remote,40,false,2
+62,Limit of Liability,1,Less than or equal to 250000,5,false,2
+63,Limit of Liability,2,Between 250000 and 1000000,10,false,2
+64,Limit of Liability,3,Between 1000000 and 5000000,15,false,2
+65,Limit of Liability,4,5000000 or greater,25,false,2
+66,Portfolio Size,1,1 to 5,0,false,2
+67,Portfolio Size,2,6 to 10,5,false,2
+68,Portfolio Size,3,11 to 20,10,false,2
+69,Portfolio Size,4,21+,20,false,2
+70,Site Complexity,1,Simple,0,false,2
+71,Site Complexity,2,Average,10,false,2
+72,Site Complexity,3,Complicated,25,false,2
+73,Site Complexity,4,Difficult,40,false,2
+74,International,1,US,0,false,2
+75,International,2,CA,15,false,2
+76,Prior Report,1,Internal < 6 months,-15,false,2
+77,Prior Report,2,Internal < 2 years,-10,false,2
+78,Prior Report,3,Internal < 10 years,0,false,2
+79,Prior Report,4,External < 2 years,5,false,2
+80,Time Period,1,Busy Level,5,false,2
+81,Turnaround Time,1,Less than or equal to 5 days,25,false,3
+82,Turnaround Time,2,Less than or equal to 10 days,15,false,3
+83,Turnaround Time,3,Less than or equal to 15 days,8,false,3
+84,Turnaround Time,4,Greater than or equal to 20 days,0,false,3
+85,Size,XS,Building SF <= 10000,0,false,3
+86,Size,S,Building SF <= 30000,0,false,3
+87,Size,M,Building SF <= 100000,2,false,3
+88,Size,L,Building SF <= 250000,3,false,3
+89,Size,XL,Building SF > 250000,5,false,3
+90,# of Stories,1,1 to 3,0,false,3
+91,# of Stories,2,4 to 10,0,false,3
+92,# of Stories,3,11+,2,false,3
+93,# of Buildings,1,1 to 2,0,false,3
+94,# of Buildings,2,3 to 5,5,false,3
+95,# of Buildings,3,6+,10,false,3
+96,Travel Difficulty,1,Easy,0,false,3
+97,Travel Difficulty,2,Moderate,10,false,3
+98,Travel Difficulty,3,Difficult,20,false,3
+99,Travel Difficulty,4,Remote,30,false,3
+100,Limit of Liability,1,Less than or equal to 250000,5,false,3
+101,Limit of Liability,2,Between 250000 and 1000000,10,false,3
+102,Limit of Liability,3,Between 1000000 and 5000000,15,false,3
+103,Limit of Liability,4,5000000 or greater,25,false,3
+104,Portfolio Size,1,1 to 5,0,false,3
+105,Portfolio Size,2,6 to 10,5,false,3
+106,Portfolio Size,3,11 to 20,10,false,3
+107,Portfolio Size,4,21+,15,false,3
+108,Site Complexity,1,Simple,0,false,3
+109,Site Complexity,2,Average,15,false,3
+110,Site Complexity,3,Complicated,30,false,3
+111,Site Complexity,4,Difficult,50,false,3
+112,International,1,US,0,false,3
+113,International,2,CA,20,false,3
+114,Prior Report,1,Internal < 6 months,-20,false,3
+115,Prior Report,2,Internal < 2 years,-10,false,3
+116,Prior Report,3,Internal < 10 years,0,false,3
+117,Prior Report,4,External < 2 years,5,false,3
+118,Time Period,1,Busy Level,5,false,3
