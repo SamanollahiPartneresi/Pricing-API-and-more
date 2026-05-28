@@ -519,6 +519,72 @@ def services():
     return jsonify({"services": out})
 
 
+@app.route("/debug/ml-info", methods=["GET"])
+def debug_ml_info():
+    """Return introspection on the loaded joblib model: type, feature names,
+    expected n_features, pipeline steps if any. Helps diagnose why the model
+    predicts near-constant values regardless of inputs."""
+    try:
+        model = load_model()
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+    if model is None:
+        return jsonify({"error": "Model failed to load (no token or no tagged file)."}), 500
+
+    info: Dict[str, Any] = {
+        "model_class": type(model).__name__,
+        "model_module": type(model).__module__,
+        "feature_names_in": list(getattr(model, "feature_names_in_", []) or []),
+        "n_features_in": int(getattr(model, "n_features_in_", 0) or 0),
+        "is_pipeline": False,
+    }
+
+    if hasattr(model, "steps"):
+        info["is_pipeline"] = True
+        info["pipeline_steps"] = []
+        for name, step in model.steps:
+            step_info: Dict[str, Any] = {
+                "name": name,
+                "class": type(step).__name__,
+                "module": type(step).__module__,
+            }
+            if hasattr(step, "feature_names_in_"):
+                try:
+                    step_info["feature_names_in"] = list(step.feature_names_in_)
+                except Exception:
+                    pass
+            if hasattr(step, "get_feature_names_out"):
+                try:
+                    step_info["feature_names_out_sample"] = list(step.get_feature_names_out())[:30]
+                    step_info["feature_names_out_count"] = len(step.get_feature_names_out())
+                except Exception:
+                    pass
+            if hasattr(step, "categories_"):
+                try:
+                    step_info["categories_per_column"] = [
+                        list(c)[:20] for c in step.categories_
+                    ]
+                except Exception:
+                    pass
+            if hasattr(step, "n_features_in_"):
+                step_info["n_features_in"] = int(step.n_features_in_)
+            if hasattr(step, "feature_importances_"):
+                try:
+                    fi = list(step.feature_importances_)
+                    info["feature_importances"] = [round(float(x), 5) for x in fi]
+                except Exception:
+                    pass
+            info["pipeline_steps"].append(step_info)
+
+    if hasattr(model, "feature_importances_") and "feature_importances" not in info:
+        try:
+            info["feature_importances"] = [round(float(x), 5) for x in model.feature_importances_]
+        except Exception:
+            pass
+
+    return jsonify(info)
+
+
 @app.route("/debug/files", methods=["GET"])
 def debug_files():
     """List files under /data so we can verify input mappings are present."""
