@@ -117,6 +117,7 @@ PRICING_FACTORS_LOCAL_CSV = "/data/in/tables/pricing_factors.csv"
 
 
 def _normalize_factors_df(df: pd.DataFrame) -> pd.DataFrame:
+    df.columns = [str(c).strip().lower() for c in df.columns]
     for col in ("category", "level", "description"):
         if col in df.columns:
             df[col] = df[col].astype(str)
@@ -534,9 +535,17 @@ def pricing_factors_endpoint():
     try:
         service_id = int(request.args.get("service_id", DEFAULT_ORDER_FORM_SERVICE_ID))
         factors = load_pricing_factors()
+        if "order_form_service_id" not in factors.columns:
+            return jsonify({
+                "error": "pricing_factors table is missing 'order_form_service_id' column",
+                "columns_seen": list(factors.columns),
+                "row_count": int(len(factors)),
+                "first_row": (factors.head(1).to_dict(orient="records") or [None])[0],
+            }), 500
+        wanted_cols = [c for c in ("category", "level", "description", "value") if c in factors.columns]
         rows = (
             factors[factors["order_form_service_id"] == service_id]
-            [["category", "level", "description", "value"]]
+            [wanted_cols]
             .astype(str)
             .to_dict(orient="records")
         )
