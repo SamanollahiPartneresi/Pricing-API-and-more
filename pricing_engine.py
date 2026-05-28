@@ -8,7 +8,7 @@ fee calculation, RFP fallback rules, and per-TAT-day totals.
 
 Used by:
     * `pricing_rules_calculator/main.py` (Streamlit UI)
-    * `main.py` (Flask API)
+    * `api.py` (Flask API)
 """
 
 from __future__ import annotations

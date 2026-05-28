@@ -7,3 +7,9 @@ venv/
 .vscode/
 *.egg-info/
 .DS_Store
+
+# Generated ML artifacts — rebuilt by machine_learning/train_model.py
+# (kept out of git so we don't carry binary diffs)
+machine_learning/pricepilot_model.pkl
+machine_learning/training_data.csv
+machine_learning/training_metrics.json
