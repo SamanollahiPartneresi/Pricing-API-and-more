@@ -524,65 +524,94 @@ def debug_ml_info():
     """Return introspection on the loaded joblib model: type, feature names,
     expected n_features, pipeline steps if any. Helps diagnose why the model
     predicts near-constant values regardless of inputs."""
+    import traceback
+
     try:
-        model = load_model()
-    except Exception as exc:
-        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
-    if model is None:
-        return jsonify({"error": "Model failed to load (no token or no tagged file)."}), 500
-
-    info: Dict[str, Any] = {
-        "model_class": type(model).__name__,
-        "model_module": type(model).__module__,
-        "feature_names_in": list(getattr(model, "feature_names_in_", []) or []),
-        "n_features_in": int(getattr(model, "n_features_in_", 0) or 0),
-        "is_pipeline": False,
-    }
-
-    if hasattr(model, "steps"):
-        info["is_pipeline"] = True
-        info["pipeline_steps"] = []
-        for name, step in model.steps:
-            step_info: Dict[str, Any] = {
-                "name": name,
-                "class": type(step).__name__,
-                "module": type(step).__module__,
-            }
-            if hasattr(step, "feature_names_in_"):
-                try:
-                    step_info["feature_names_in"] = list(step.feature_names_in_)
-                except Exception:
-                    pass
-            if hasattr(step, "get_feature_names_out"):
-                try:
-                    step_info["feature_names_out_sample"] = list(step.get_feature_names_out())[:30]
-                    step_info["feature_names_out_count"] = len(step.get_feature_names_out())
-                except Exception:
-                    pass
-            if hasattr(step, "categories_"):
-                try:
-                    step_info["categories_per_column"] = [
-                        list(c)[:20] for c in step.categories_
-                    ]
-                except Exception:
-                    pass
-            if hasattr(step, "n_features_in_"):
-                step_info["n_features_in"] = int(step.n_features_in_)
-            if hasattr(step, "feature_importances_"):
-                try:
-                    fi = list(step.feature_importances_)
-                    info["feature_importances"] = [round(float(x), 5) for x in fi]
-                except Exception:
-                    pass
-            info["pipeline_steps"].append(step_info)
-
-    if hasattr(model, "feature_importances_") and "feature_importances" not in info:
         try:
-            info["feature_importances"] = [round(float(x), 5) for x in model.feature_importances_]
-        except Exception:
-            pass
+            model = load_model()
+        except Exception as exc:
+            return jsonify({"error": f"load_model failed: {type(exc).__name__}: {exc}"}), 500
+        if model is None:
+            return jsonify({"error": "Model failed to load (no token or no tagged file)."}), 500
 
-    return jsonify(info)
+        info: Dict[str, Any] = {
+            "model_class": type(model).__name__,
+            "model_module": type(model).__module__,
+            "is_pipeline": False,
+            "top_level_attrs": [a for a in dir(model) if not a.startswith("_")][:50],
+        }
+
+        try:
+            fni = getattr(model, "feature_names_in_", None)
+            if fni is not None:
+                info["feature_names_in"] = [str(x) for x in fni]
+        except Exception as exc:
+            info["feature_names_in_error"] = f"{type(exc).__name__}: {exc}"
+
+        try:
+            n = getattr(model, "n_features_in_", None)
+            if n is not None:
+                info["n_features_in"] = int(n)
+        except Exception as exc:
+            info["n_features_in_error"] = f"{type(exc).__name__}: {exc}"
+
+        if hasattr(model, "steps"):
+            info["is_pipeline"] = True
+            info["pipeline_steps"] = []
+            for name, step in model.steps:
+                step_info: Dict[str, Any] = {
+                    "name": str(name),
+                    "class": type(step).__name__,
+                    "module": type(step).__module__,
+                }
+                try:
+                    fni = getattr(step, "feature_names_in_", None)
+                    if fni is not None:
+                        step_info["feature_names_in"] = [str(x) for x in fni]
+                except Exception as exc:
+                    step_info["feature_names_in_error"] = f"{type(exc).__name__}: {exc}"
+                try:
+                    if hasattr(step, "get_feature_names_out"):
+                        out = step.get_feature_names_out()
+                        step_info["feature_names_out_count"] = int(len(out))
+                        step_info["feature_names_out_sample"] = [str(x) for x in list(out)[:30]]
+                except Exception as exc:
+                    step_info["feature_names_out_error"] = f"{type(exc).__name__}: {exc}"
+                try:
+                    cats = getattr(step, "categories_", None)
+                    if cats is not None:
+                        step_info["categories_per_column"] = [
+                            [str(x) for x in list(c)[:20]] for c in cats
+                        ]
+                except Exception as exc:
+                    step_info["categories_error"] = f"{type(exc).__name__}: {exc}"
+                try:
+                    n = getattr(step, "n_features_in_", None)
+                    if n is not None:
+                        step_info["n_features_in"] = int(n)
+                except Exception:
+                    pass
+                try:
+                    fi = getattr(step, "feature_importances_", None)
+                    if fi is not None:
+                        step_info["feature_importances"] = [round(float(x), 5) for x in fi]
+                except Exception as exc:
+                    step_info["feature_importances_error"] = f"{type(exc).__name__}: {exc}"
+                info["pipeline_steps"].append(step_info)
+
+        try:
+            fi = getattr(model, "feature_importances_", None)
+            if fi is not None and "feature_importances" not in info:
+                info["feature_importances"] = [round(float(x), 5) for x in fi]
+        except Exception as exc:
+            info["feature_importances_error"] = f"{type(exc).__name__}: {exc}"
+
+        return jsonify(info)
+    except Exception as exc:
+        return jsonify({
+            "error": f"{type(exc).__name__}: {exc}",
+            "traceback": traceback.format_exc().splitlines()[-15:],
+        }), 500
 
 
 @app.route("/debug/files", methods=["GET"])
