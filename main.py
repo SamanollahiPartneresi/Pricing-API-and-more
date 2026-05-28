@@ -114,9 +114,6 @@ def load_model():
 # Pricing factors loader (Storage data-preview API, 10-minute cache)
 
 
-PRICING_FACTORS_LOCAL_CSV = "/data/in/tables/pricing_factors.csv"
-
-
 def _normalize_factors_df(df: pd.DataFrame) -> pd.DataFrame:
     df.columns = [str(c).strip().lower() for c in df.columns]
     for col in ("category", "level", "description"):
@@ -129,94 +126,66 @@ def _normalize_factors_df(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _export_table_to_dataframe(
-    table_id: str, token: str, base_url: str, *, max_wait_s: int = 60
-) -> pd.DataFrame:
-    """Async export of a Keboola Storage table to a CSV file, then download.
-    Works for tables of any size (data-preview is capped at 100 rows).
+_FACTORS_BY_SERVICE: Dict[int, pd.DataFrame] = {}
+_FACTORS_BY_SERVICE_LOADED_AT: Dict[int, float] = {}
+
+
+def load_factors_for_service(service_id: int, *, force_refresh: bool = False) -> pd.DataFrame:
+    """Load pricing_factors filtered to one service via the data-preview API.
+
+    The data-preview endpoint is capped at ~100 rows, and the largest service
+    has 73 factor rows, so a `whereColumn` filter fits. Cached per service for
+    PRICING_FACTORS_TTL_SECONDS.
     """
-    headers = {"X-StorageApi-Token": token}
-
-    create = requests.post(
-        f"{base_url}/v2/storage/tables/{table_id}/export-async",
-        headers=headers,
-        json={"format": "rfc", "gzip": False},
-        timeout=30,
-    )
-    create.raise_for_status()
-    job = create.json()
-    job_url = job.get("url") or f"{base_url}/v2/storage/jobs/{job['id']}"
-
-    start = time.time()
-    while True:
-        poll = requests.get(job_url, headers=headers, timeout=30)
-        poll.raise_for_status()
-        job = poll.json()
-        status = job.get("status")
-        if status == "success":
-            break
-        if status == "error":
-            raise RuntimeError(f"Storage export job failed: {job.get('error')}")
-        if time.time() - start > max_wait_s:
-            raise TimeoutError(
-                f"Storage export job did not finish within {max_wait_s}s (status={status})."
-            )
-        time.sleep(0.5)
-
-    file_id = ((job.get("results") or {}).get("file") or {}).get("id")
-    if not file_id:
-        raise RuntimeError(f"Storage export job finished but returned no file id: {job}")
-
-    file_meta = requests.get(
-        f"{base_url}/v2/storage/files/{file_id}",
-        headers=headers,
-        params={"federationToken": 1},
-        timeout=30,
-    )
-    file_meta.raise_for_status()
-    download_url = file_meta.json().get("url")
-    if not download_url:
-        raise RuntimeError("Storage file meta has no download URL.")
-
-    csv_bytes = requests.get(download_url, timeout=60).content
-    return pd.read_csv(io.BytesIO(csv_bytes))
-
-
-def load_pricing_factors(force_refresh: bool = False) -> pd.DataFrame:
-    """Load the `pricing_factors` table.
-
-    Tries in order:
-      1. Local CSV at `/data/in/tables/pricing_factors.csv` (set when the
-         data app has an input mapping configured — cheapest, no API calls).
-      2. Keboola Storage async export — works for any table size.
-
-    Cached in-process for PRICING_FACTORS_TTL_SECONDS.
-    """
-    global _FACTORS, _FACTORS_LOADED_AT
+    service_id = int(service_id)
     now = time.time()
     if (
         not force_refresh
-        and _FACTORS is not None
-        and (now - _FACTORS_LOADED_AT) < PRICING_FACTORS_TTL_SECONDS
+        and service_id in _FACTORS_BY_SERVICE
+        and (now - _FACTORS_BY_SERVICE_LOADED_AT.get(service_id, 0))
+        < PRICING_FACTORS_TTL_SECONDS
     ):
-        return _FACTORS
+        return _FACTORS_BY_SERVICE[service_id]
 
-    if os.path.exists(PRICING_FACTORS_LOCAL_CSV):
-        df = pd.read_csv(PRICING_FACTORS_LOCAL_CSV)
-    else:
-        token = os.environ.get("KBC_TOKEN")
-        base_url = os.environ.get("KBC_URL", "https://connection.keboola.com").rstrip("/")
-        if not token:
-            raise RuntimeError(
-                "KBC_TOKEN env var is not set and no local pricing_factors.csv was "
-                "mounted; cannot load pricing factors."
-            )
-        df = _export_table_to_dataframe(PRICING_FACTORS_TABLE_ID, token, base_url)
+    token = os.environ.get("KBC_TOKEN")
+    base_url = os.environ.get("KBC_URL", "https://connection.keboola.com").rstrip("/")
+    if not token:
+        raise RuntimeError("KBC_TOKEN env var is not set; cannot load pricing_factors.")
 
+    response = requests.get(
+        f"{base_url}/v2/storage/tables/{PRICING_FACTORS_TABLE_ID}/data-preview",
+        headers={"X-StorageApi-Token": token},
+        params=[
+            ("format", "rfc"),
+            ("limit", "100"),
+            ("whereColumn", "order_form_service_id"),
+            ("whereValues[]", str(service_id)),
+            ("whereOperator", "eq"),
+        ],
+        timeout=30,
+    )
+    response.raise_for_status()
+    df = pd.read_csv(io.StringIO(response.text))
     df = _normalize_factors_df(df)
-    _FACTORS = df
-    _FACTORS_LOADED_AT = now
+
+    _FACTORS_BY_SERVICE[service_id] = df
+    _FACTORS_BY_SERVICE_LOADED_AT[service_id] = now
     return df
+
+
+def load_pricing_factors(force_refresh: bool = False) -> pd.DataFrame:
+    """Load factors for all known services (concatenated). Useful when an
+    explain endpoint doesn't yet know which service is wanted.
+    """
+    frames = []
+    for sid in SERVICE_NAMES.keys():
+        try:
+            frames.append(load_factors_for_service(sid, force_refresh=force_refresh))
+        except Exception:
+            continue
+    if not frames:
+        return pd.DataFrame(columns=["category", "level", "description", "value", "order_form_service_id"])
+    return pd.concat(frames, ignore_index=True)
 
 
 # Input parsing
@@ -290,11 +259,8 @@ def run_rule_based(input_row: dict[str, Any]) -> dict[str, Any]:
     `Pricing.main_algo` port. Returns the structured dict produced by
     `pricing_engine.calculate()` plus an `order_form_service_id`/`base_fee_default`
     summary that the API layer surfaces in the response."""
-    factors_all = load_pricing_factors()
     service_id = int(input_row["order_form_service_id"])
-    factors_df = factors_all[
-        factors_all["order_form_service_id"] == service_id
-    ].copy()
+    factors_df = load_factors_for_service(service_id).copy()
 
     base_fee = float(input_row["base_fee"])
     if base_fee <= 0:
@@ -569,26 +535,14 @@ def pricing_factors_endpoint():
     """Return the raw factor rules for a service (debug/explain support)."""
     try:
         service_id = int(request.args.get("service_id", DEFAULT_ORDER_FORM_SERVICE_ID))
-        factors = load_pricing_factors()
-        if "order_form_service_id" not in factors.columns:
-            return jsonify({
-                "error": "pricing_factors table is missing 'order_form_service_id' column",
-                "columns_seen": list(factors.columns),
-                "row_count": int(len(factors)),
-                "first_row": (factors.head(1).to_dict(orient="records") or [None])[0],
-            }), 500
+        factors = load_factors_for_service(service_id)
         wanted_cols = [c for c in ("category", "level", "description", "value") if c in factors.columns]
-        rows = (
-            factors[factors["order_form_service_id"] == service_id]
-            [wanted_cols]
-            .astype(str)
-            .to_dict(orient="records")
-        )
+        rows = factors[wanted_cols].astype(str).to_dict(orient="records") if wanted_cols else []
         return jsonify({
             "order_form_service_id": service_id,
             "service_name": SERVICE_NAMES.get(service_id),
-            "rows": rows,
             "row_count": len(rows),
+            "rows": rows,
         })
     except Exception as exc:
         return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
