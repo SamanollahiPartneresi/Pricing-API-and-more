@@ -22,7 +22,7 @@ import math
 import os
 import time
 import warnings
-from typing import Any
+from typing import Any, Dict
 
 import joblib
 import pandas as pd
@@ -527,6 +527,31 @@ def services():
             "factor_row_count": int(counts.get(sid, 0)) if counts else None,
         })
     return jsonify({"services": out})
+
+
+@app.route("/debug/files", methods=["GET"])
+def debug_files():
+    """List files under /data so we can verify input mappings are present."""
+    out: Dict[str, Any] = {
+        "cwd": os.getcwd(),
+        "local_csv_path": PRICING_FACTORS_LOCAL_CSV,
+        "local_csv_exists": os.path.exists(PRICING_FACTORS_LOCAL_CSV),
+    }
+    for root in ("/data", "/data/in", "/data/in/tables", "/data/in/files"):
+        try:
+            entries = []
+            if os.path.isdir(root):
+                for name in sorted(os.listdir(root)):
+                    full = os.path.join(root, name)
+                    entries.append({
+                        "name": name,
+                        "is_dir": os.path.isdir(full),
+                        "size": os.path.getsize(full) if os.path.isfile(full) else None,
+                    })
+            out[root] = entries if os.path.isdir(root) else "(missing)"
+        except Exception as exc:
+            out[root] = f"error: {exc}"
+    return jsonify(out)
 
 
 @app.route("/pricing-factors", methods=["GET"])
