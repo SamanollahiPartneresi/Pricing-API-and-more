@@ -1,0 +1,505 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "PricePilot Pricing API",
+    "description": "Combined rule-based pricing engine and ML model for commercial property\nservices (PCA Debt, PCA Equity, ESA, Zoning).\n\nThe rule-based engine mirrors `Pricing.main_algo` from the SL_Heaven\nrepository and reads the `pricing_factors` table from Keboola Storage.\nThe ML model is a regressor trained on historical quote data.\n\nEvery quote endpoint returns BOTH predictions plus a comparison block\n(delta_abs, delta_pct, rfp flag) so the agent can show users a\nrule-based answer and an ML \"second opinion\" in one call.\n",
+    "version": "2.0",
+    "contact": {
+      "name": "Samanollahi Partneresi",
+      "url": "https://github.com/SamanollahiPartneresi/Pricing-API-and-more"
+    }
+  },
+  "host": "pricepilot-api-1304626184.hub.keboola.com",
+  "basePath": "/",
+  "schemes": [
+    "https"
+  ],
+  "consumes": [
+    "application/json"
+  ],
+  "produces": [
+    "application/json"
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "HealthCheck",
+        "summary": "Health check",
+        "description": "Liveness probe. Returns 200 OK when the service is up.",
+        "x-ms-visibility": "internal",
+        "responses": {
+          "200": {
+            "description": "Service is healthy",
+            "schema": {
+              "$ref": "#/definitions/HealthResponse"
+            }
+          }
+        }
+      }
+    },
+    "/services": {
+      "get": {
+        "operationId": "ListServices",
+        "summary": "List pricing services",
+        "description": "Returns every service the engine knows about, each with its default\nbase fee and the live count of pricing-factor rules currently in\nStorage. Use this to populate a dropdown of services the user can\nrequest a quote for.\n",
+        "responses": {
+          "200": {
+            "description": "Service list",
+            "schema": {
+              "$ref": "#/definitions/ServicesResponse"
+            }
+          }
+        }
+      }
+    },
+    "/pricing-factors": {
+      "get": {
+        "operationId": "GetPricingFactors",
+        "summary": "Get pricing factor rules for one service",
+        "description": "Returns the raw factor rules (category, level, description, value)\nthe rule-based engine uses to score a quote for the given service.\nUseful for \"explain my quote\" prompts.\n",
+        "parameters": [
+          {
+            "name": "service_id",
+            "in": "query",
+            "description": "Order-form service id. 1 = PCA Equity, 2 = ESA, 3 = Zoning,\n4 = PCA Debt.\n",
+            "required": true,
+            "type": "integer",
+            "x-ms-summary": "Service ID",
+            "enum": [
+              1,
+              2,
+              3,
+              4
+            ]
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Factor rules",
+            "schema": {
+              "$ref": "#/definitions/PricingFactorsResponse"
+            }
+          }
+        }
+      }
+    },
+    "/quote": {
+      "post": {
+        "operationId": "GetQuote",
+        "summary": "Get a combined rule-based and ML quote",
+        "description": "Calls both the rule-based engine and the ML model with the same\ninputs and returns both totals, a per-category breakdown, the TAT\nscale (price at every turnaround day), and a comparison block.\n\nAt minimum, supply `order_form_service_id` and `tat`. Other fields\nimprove accuracy. If the rule-based engine returns RFP for the\nrequested turnaround, `comparison.rule_based_total` will be the\nstring `\"RFP\"` and `delta_pct` will be null.\n",
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "description": "Project inputs used by both engines.",
+            "schema": {
+              "$ref": "#/definitions/QuoteRequest"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Combined quote",
+            "schema": {
+              "$ref": "#/definitions/QuoteResponse"
+            }
+          },
+          "500": {
+            "description": "Engine or ML model failure",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "HealthResponse": {
+      "type": "object",
+      "properties": {
+        "service": {
+          "type": "string",
+          "description": "Service identifier",
+          "example": "pricepilot-api"
+        },
+        "status": {
+          "type": "string",
+          "description": "Health status",
+          "example": "ok"
+        }
+      }
+    },
+    "ServicesResponse": {
+      "type": "object",
+      "properties": {
+        "services": {
+          "type": "array",
+          "description": "All known pricing services",
+          "items": {
+            "$ref": "#/definitions/ServiceSummary"
+          }
+        }
+      }
+    },
+    "ServiceSummary": {
+      "type": "object",
+      "properties": {
+        "order_form_service_id": {
+          "type": "integer",
+          "description": "Service id used by /quote and /pricing-factors",
+          "example": 4
+        },
+        "name": {
+          "type": "string",
+          "description": "Human-readable service name",
+          "example": "PCA Debt"
+        },
+        "base_fee_default": {
+          "type": "number",
+          "format": "float",
+          "description": "Default base fee (USD) used when the caller omits base_fee",
+          "example": 2400.0
+        },
+        "factor_row_count": {
+          "type": "integer",
+          "description": "Number of pricing-factor rules currently loaded for this service",
+          "example": 73
+        }
+      }
+    },
+    "PricingFactorsResponse": {
+      "type": "object",
+      "properties": {
+        "order_form_service_id": {
+          "type": "integer",
+          "example": 4
+        },
+        "service_name": {
+          "type": "string",
+          "example": "PCA Debt"
+        },
+        "row_count": {
+          "type": "integer",
+          "example": 73
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PricingFactorRow"
+          }
+        }
+      }
+    },
+    "PricingFactorRow": {
+      "type": "object",
+      "properties": {
+        "category": {
+          "type": "string",
+          "description": "Factor category (Turnaround Time, Travel Difficulty, Size, etc.)",
+          "example": "Turnaround Time"
+        },
+        "level": {
+          "type": "string",
+          "description": "Level/key identifying the rule inside the category",
+          "example": "10"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of the rule",
+          "example": "10 days"
+        },
+        "value": {
+          "type": "string",
+          "description": "Numeric percentage (as string) or the literal \"RFP\"",
+          "example": "0.20"
+        }
+      }
+    },
+    "QuoteRequest": {
+      "type": "object",
+      "required": [
+        "order_form_service_id"
+      ],
+      "properties": {
+        "order_form_service_id": {
+          "type": "integer",
+          "description": "Service to quote. 1 = PCA Equity, 2 = ESA, 3 = Zoning, 4 = PCA Debt.\n",
+          "example": 4,
+          "x-ms-summary": "Service ID",
+          "enum": [
+            1,
+            2,
+            3,
+            4
+          ]
+        },
+        "base_fee": {
+          "type": "number",
+          "format": "float",
+          "description": "Base fee (USD). Optional \u2014 when omitted, the engine uses the\nservice default (PCA Equity $4,000, ESA $2,200, Zoning $2,500,\nPCA Debt $2,400).\n",
+          "example": 2400.0,
+          "x-ms-summary": "Base fee (USD)"
+        },
+        "tat": {
+          "type": "integer",
+          "description": "Turnaround time in business days",
+          "example": 10,
+          "x-ms-summary": "Turnaround (days)"
+        },
+        "facility_type": {
+          "type": "string",
+          "description": "Property type (Office, Industrial, Multi-Family, Seniors Housing, Retail, etc.)",
+          "example": "Office",
+          "x-ms-summary": "Facility type"
+        },
+        "building_area": {
+          "type": "number",
+          "format": "float",
+          "description": "Total building area in square feet",
+          "example": 80000,
+          "x-ms-summary": "Building area (SF)"
+        },
+        "land_area": {
+          "type": "string",
+          "description": "Land area (acres) \u2014 used by Zoning only",
+          "x-ms-summary": "Land area (acres)"
+        },
+        "number_of_buildings": {
+          "type": "string",
+          "description": "Count of buildings (free-text since the engine accepts ranges like \"2-5 bldgs\")",
+          "example": "2",
+          "x-ms-summary": "Number of buildings"
+        },
+        "number_of_stories": {
+          "type": "integer",
+          "description": "Number of stories",
+          "example": 3,
+          "x-ms-summary": "Number of stories"
+        },
+        "country_code": {
+          "type": "string",
+          "description": "ISO country code; non-US triggers an international surcharge",
+          "example": "US",
+          "default": "US",
+          "x-ms-summary": "Country code"
+        },
+        "travel_difficulty": {
+          "type": "string",
+          "description": "Travel difficulty description matching a factor row, e.g.\n\"< 60 minute drive\", \"1-3 hour drive\", \"Easy flight\".\n",
+          "x-ms-summary": "Travel difficulty"
+        },
+        "prior_report": {
+          "type": "string",
+          "description": "Prior-report description (if any)",
+          "x-ms-summary": "Prior report"
+        },
+        "site_complexity": {
+          "type": "string",
+          "description": "Site-complexity description (if any)",
+          "x-ms-summary": "Site complexity"
+        },
+        "limit_of_liability": {
+          "type": "string",
+          "description": "Limit-of-liability bracket as text (e.g. \"Less than or equal to 249,999\")",
+          "x-ms-summary": "Limit of liability"
+        },
+        "portfolio_size": {
+          "type": "string",
+          "description": "Portfolio size description (if quoting a portfolio)",
+          "x-ms-summary": "Portfolio size"
+        },
+        "total_units": {
+          "type": "string",
+          "description": "Total units \u2014 Multi-Family and Seniors Housing only",
+          "x-ms-summary": "Total units"
+        },
+        "percent_units_to_inspect": {
+          "type": "string",
+          "description": "Percentage of units to inspect \u2014 Multi-Family and Seniors Housing only",
+          "x-ms-summary": "Percent units to inspect"
+        },
+        "secondary_property_type": {
+          "type": "string",
+          "description": "Secondary property type (rare; mostly mixed-use)",
+          "x-ms-summary": "Secondary property type"
+        },
+        "is_rfp": {
+          "type": "boolean",
+          "description": "Force RFP regardless of TAT rule",
+          "default": false,
+          "x-ms-summary": "Force RFP"
+        }
+      }
+    },
+    "QuoteResponse": {
+      "type": "object",
+      "properties": {
+        "rule_based": {
+          "$ref": "#/definitions/RuleBasedResult"
+        },
+        "ml": {
+          "$ref": "#/definitions/MLResult"
+        },
+        "comparison": {
+          "$ref": "#/definitions/ComparisonBlock"
+        },
+        "inputs": {
+          "type": "object",
+          "description": "Echo of the parsed inputs the engines saw",
+          "additionalProperties": true
+        },
+        "ml_error": {
+          "type": "string",
+          "description": "Populated only if the ML model failed; null on success"
+        }
+      }
+    },
+    "RuleBasedResult": {
+      "type": "object",
+      "description": "Output of the rule-based engine (Pricing.main_algo port).\n`total_fee` is either a number or the string \"RFP\".\n",
+      "properties": {
+        "service_name": {
+          "type": "string",
+          "example": "PCA Debt"
+        },
+        "order_form_service_id": {
+          "type": "integer",
+          "example": 4
+        },
+        "base_fee": {
+          "type": "number",
+          "format": "float"
+        },
+        "base_fee_default_for_service": {
+          "type": "number",
+          "format": "float"
+        },
+        "base_fee_overridden": {
+          "type": "boolean"
+        },
+        "factors_loaded_count": {
+          "type": "integer",
+          "description": "Number of factor rules loaded for the service",
+          "example": 73
+        },
+        "is_rfp": {
+          "type": "boolean",
+          "description": "True if the rule-based engine forced RFP (typically due to TAT)"
+        },
+        "subtotal_before_rounding": {
+          "type": "number",
+          "format": "float"
+        },
+        "total_fee": {
+          "description": "USD total or the literal \"RFP\""
+        },
+        "fees": {
+          "type": "object",
+          "description": "Map of fee_key to amount (or \"RFP\")",
+          "additionalProperties": true
+        },
+        "breakdown": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/BreakdownRow"
+          }
+        },
+        "tat_totals_by_day": {
+          "type": "object",
+          "description": "Map of TAT (days as string) -> total fee at that turnaround.\nUseful for \"what if I gave them more time?\" follow-ups.\n",
+          "additionalProperties": true
+        }
+      }
+    },
+    "BreakdownRow": {
+      "type": "object",
+      "properties": {
+        "category": {
+          "type": "string",
+          "example": "Turnaround Time"
+        },
+        "description": {
+          "type": "string",
+          "example": "10 days"
+        },
+        "level": {
+          "type": "string",
+          "example": "10"
+        },
+        "percentage": {
+          "description": "Percentage applied (number) or \"RFP\""
+        },
+        "fee_key": {
+          "type": "string",
+          "example": "tat_fee"
+        },
+        "amount": {
+          "description": "Dollar amount added (number) or \"RFP\""
+        }
+      }
+    },
+    "MLResult": {
+      "type": "object",
+      "properties": {
+        "predicted_fee": {
+          "type": "number",
+          "format": "float",
+          "description": "ML prediction rounded to nearest $50",
+          "example": 7750
+        },
+        "predicted_fee_raw": {
+          "type": "number",
+          "format": "float",
+          "description": "Raw ML output before rounding",
+          "example": 7705.25
+        },
+        "predicted_multiplier": {
+          "type": "number",
+          "format": "float",
+          "description": "Multiplier the ML model applied vs the base fee",
+          "example": 3.2105
+        },
+        "is_rfp": {
+          "type": "boolean"
+        }
+      }
+    },
+    "ComparisonBlock": {
+      "type": "object",
+      "properties": {
+        "rule_based_total": {
+          "description": "Rule-based total in USD or \"RFP\""
+        },
+        "ml_total": {
+          "type": "number",
+          "format": "float"
+        },
+        "delta_abs": {
+          "type": "number",
+          "format": "float",
+          "description": "ml_total minus rule_based_total. Null when rule is RFP."
+        },
+        "delta_pct": {
+          "type": "number",
+          "format": "float",
+          "description": "Percent delta vs rule_based_total. Null when rule is RFP."
+        },
+        "rule_based_is_rfp": {
+          "type": "boolean"
+        }
+      }
+    },
+    "ErrorResponse": {
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": "string",
+          "description": "<ErrorType>: <message>"
+        }
+      }
+    }
+  }
+}
