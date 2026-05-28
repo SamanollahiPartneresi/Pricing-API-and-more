@@ -29,6 +29,7 @@ import joblib
 import pandas as pd
 import requests
 from flask import Flask, jsonify, request
+from flask.json.provider import DefaultJSONProvider
 
 import pricing_engine
 from pricing_engine import (
@@ -39,7 +40,29 @@ from pricing_engine import (
     calculate as rule_based_calculate,
 )
 
+def _scrub_invalid_json_floats(obj: Any) -> Any:
+    """Replace NaN / Infinity (which Python's json emits unquoted) with None,
+    so downstream strict JSON parsers (.NET, Power Apps, Copilot Studio) don't
+    choke. Walks dicts and lists recursively."""
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    if isinstance(obj, dict):
+        return {k: _scrub_invalid_json_floats(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_scrub_invalid_json_floats(v) for v in obj]
+    return obj
+
+
+class SafeJSONProvider(DefaultJSONProvider):
+    """Flask JSON provider that scrubs NaN/Infinity to null before serializing."""
+    def dumps(self, obj: Any, **kwargs: Any) -> str:
+        return super().dumps(_scrub_invalid_json_floats(obj), **kwargs)
+
+
 app = Flask(__name__)
+app.json = SafeJSONProvider(app)
 
 INPUT_COLUMNS = [
     "base_fee", "tat", "portfolio_size", "building_area", "land_area",
@@ -537,7 +560,11 @@ def pricing_factors_endpoint():
         service_id = int(request.args.get("service_id", DEFAULT_ORDER_FORM_SERVICE_ID))
         factors = load_factors_for_service(service_id)
         wanted_cols = [c for c in ("category", "level", "description", "value") if c in factors.columns]
-        rows = factors[wanted_cols].astype(str).to_dict(orient="records") if wanted_cols else []
+        rows = (
+            factors[wanted_cols].fillna("").astype(str).to_dict(orient="records")
+            if wanted_cols
+            else []
+        )
         return jsonify({
             "order_form_service_id": service_id,
             "service_name": SERVICE_NAMES.get(service_id),
