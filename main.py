@@ -113,9 +113,83 @@ def load_model():
 # Pricing factors loader (Storage data-preview API, 10-minute cache)
 
 
+PRICING_FACTORS_LOCAL_CSV = "/data/in/tables/pricing_factors.csv"
+
+
+def _normalize_factors_df(df: pd.DataFrame) -> pd.DataFrame:
+    for col in ("category", "level", "description"):
+        if col in df.columns:
+            df[col] = df[col].astype(str)
+    if "order_form_service_id" in df.columns:
+        df["order_form_service_id"] = pd.to_numeric(
+            df["order_form_service_id"], errors="coerce"
+        ).astype("Int64")
+    return df
+
+
+def _export_table_to_dataframe(
+    table_id: str, token: str, base_url: str, *, max_wait_s: int = 60
+) -> pd.DataFrame:
+    """Async export of a Keboola Storage table to a CSV file, then download.
+    Works for tables of any size (data-preview is capped at 100 rows).
+    """
+    headers = {"X-StorageApi-Token": token}
+
+    create = requests.post(
+        f"{base_url}/v2/storage/tables/{table_id}/export-async",
+        headers=headers,
+        json={"format": "rfc", "gzip": False},
+        timeout=30,
+    )
+    create.raise_for_status()
+    job = create.json()
+    job_url = job.get("url") or f"{base_url}/v2/storage/jobs/{job['id']}"
+
+    start = time.time()
+    while True:
+        poll = requests.get(job_url, headers=headers, timeout=30)
+        poll.raise_for_status()
+        job = poll.json()
+        status = job.get("status")
+        if status == "success":
+            break
+        if status == "error":
+            raise RuntimeError(f"Storage export job failed: {job.get('error')}")
+        if time.time() - start > max_wait_s:
+            raise TimeoutError(
+                f"Storage export job did not finish within {max_wait_s}s (status={status})."
+            )
+        time.sleep(0.5)
+
+    file_id = ((job.get("results") or {}).get("file") or {}).get("id")
+    if not file_id:
+        raise RuntimeError(f"Storage export job finished but returned no file id: {job}")
+
+    file_meta = requests.get(
+        f"{base_url}/v2/storage/files/{file_id}",
+        headers=headers,
+        params={"federationToken": 1},
+        timeout=30,
+    )
+    file_meta.raise_for_status()
+    download_url = file_meta.json().get("url")
+    if not download_url:
+        raise RuntimeError("Storage file meta has no download URL.")
+
+    csv_bytes = requests.get(download_url, timeout=60).content
+    return pd.read_csv(io.BytesIO(csv_bytes))
+
+
 def load_pricing_factors(force_refresh: bool = False) -> pd.DataFrame:
-    """Load the `pricing_factors` table from Keboola Storage via the
-    data-preview API. Cached in-process for PRICING_FACTORS_TTL_SECONDS."""
+    """Load the `pricing_factors` table.
+
+    Tries in order:
+      1. Local CSV at `/data/in/tables/pricing_factors.csv` (set when the
+         data app has an input mapping configured — cheapest, no API calls).
+      2. Keboola Storage async export — works for any table size.
+
+    Cached in-process for PRICING_FACTORS_TTL_SECONDS.
+    """
     global _FACTORS, _FACTORS_LOADED_AT
     now = time.time()
     if (
@@ -125,28 +199,19 @@ def load_pricing_factors(force_refresh: bool = False) -> pd.DataFrame:
     ):
         return _FACTORS
 
-    token = os.environ.get("KBC_TOKEN")
-    base_url = os.environ.get("KBC_URL", "https://connection.keboola.com").rstrip("/")
-    if not token:
-        raise RuntimeError("KBC_TOKEN env var is not set; cannot load pricing_factors.")
+    if os.path.exists(PRICING_FACTORS_LOCAL_CSV):
+        df = pd.read_csv(PRICING_FACTORS_LOCAL_CSV)
+    else:
+        token = os.environ.get("KBC_TOKEN")
+        base_url = os.environ.get("KBC_URL", "https://connection.keboola.com").rstrip("/")
+        if not token:
+            raise RuntimeError(
+                "KBC_TOKEN env var is not set and no local pricing_factors.csv was "
+                "mounted; cannot load pricing factors."
+            )
+        df = _export_table_to_dataframe(PRICING_FACTORS_TABLE_ID, token, base_url)
 
-    response = requests.get(
-        f"{base_url}/v2/storage/tables/{PRICING_FACTORS_TABLE_ID}/data-preview",
-        headers={"X-StorageApi-Token": token},
-        params={"format": "rfc", "limit": 10000},
-        timeout=30,
-    )
-    response.raise_for_status()
-    df = pd.read_csv(io.StringIO(response.text))
-
-    for col in ("category", "level", "description"):
-        if col in df.columns:
-            df[col] = df[col].astype(str)
-    if "order_form_service_id" in df.columns:
-        df["order_form_service_id"] = pd.to_numeric(
-            df["order_form_service_id"], errors="coerce"
-        ).astype("Int64")
-
+    df = _normalize_factors_df(df)
     _FACTORS = df
     _FACTORS_LOADED_AT = now
     return df
