@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import io
 import math
+import json
 import os
 import time
 import warnings
@@ -551,6 +552,15 @@ def debug_files():
             out[root] = entries if os.path.isdir(root) else "(missing)"
         except Exception as exc:
             out[root] = f"error: {exc}"
+    try:
+        with open("/data/config.json", "r", encoding="utf-8") as fh:
+            cfg = json.load(fh)
+        out["config_keys"] = list(cfg.keys())
+        out["config_storage"] = cfg.get("storage")
+        params = cfg.get("parameters") or cfg.get("image_parameters") or {}
+        out["config_param_keys"] = list(params.keys()) if isinstance(params, dict) else None
+    except Exception as exc:
+        out["config_error"] = f"{type(exc).__name__}: {exc}"
     return jsonify(out)
 
 
