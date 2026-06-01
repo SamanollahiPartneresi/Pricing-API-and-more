@@ -773,13 +773,9 @@ with st.sidebar:
         help="When on, the app sends the same inputs to the Flask ML API and shows both "
         "predictions side-by-side.",
     )
-    ml_api_url = st.text_input(
-        "ML API URL",
-        value=ML_API_URL_DEFAULT,
-        help="Base URL of the PricePilot Flask data app. The Streamlit app calls "
-        "GET {url}/?api=true&... with the current inputs.",
-        disabled=not ml_enabled,
-    )
+    # Endpoint is fixed (the production PricePilot API). Override only via the
+    # ML_API_URL environment variable on the data app, not from the UI.
+    ml_api_url = ML_API_URL_DEFAULT
 
 
 @st.cache_data(ttl=300)
