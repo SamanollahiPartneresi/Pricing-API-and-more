@@ -33,7 +33,7 @@ ML pricing for Partner Engineering and Science — Keboola Data App + Copilot St
 ```bash
 curl -sS -X POST https://YOUR-APP-URL.hub.keboola.com/quote \
   -H 'Content-Type: application/json' \
-  -d '{"order_form_service_id":4,"base_fee":2400,"tat":15,"facility_type":"Office","building_area":80000,"number_of_stories":3,"number_of_buildings":1,"country_code":"US"}'
+  -d '{"order_form_service_id":4,"base_fee":2400,"tat":15,"primary_property_type":"Office","building_area":80000,"number_of_stories":3,"number_of_buildings":1,"country_code":"US"}'
 ```
 
 Returns JSON with both `rule_based.total_fee` and `ml.predicted_fee`.

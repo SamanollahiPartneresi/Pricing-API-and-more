@@ -2,6 +2,43 @@
 
 This folder contains everything needed to rebuild PricePilot's fee-prediction model from scratch.
 
+## Real-data model (current) — `train_fee_model.py`
+
+Trains on **real historical quotes**, not synthetic data. Source table:
+`pricing_fee_model_input` (Keboola bucket `Data_Science_Pricing_Agent`,
+table id `in.c-Data_Science_Pricing_Agent.pricing_fee_model_input`) —
+~141k cleaned/winsorized rows across Phase I ESA, Equity PCA, and Debt PCA.
+
+- **Target:** `log_fee` (natural log of the awarded scope fee); predictions
+  are exponentiated back to dollars for reporting.
+- **Model:** LightGBM with native categorical + NaN handling (no one-hot blow-up).
+- **Leakage discipline:** cost/margin columns, final project fee, project/scope
+  status, and raw identifiers are present in the table but **excluded** as
+  features (they're only known after award). `suggested_fee_ref` is kept (it's a
+  quote-time reference, not an outcome). See `LEAKAGE_EXCLUDED` / `ID_EXCLUDED`.
+- **Outputs:** `pricepilot_fee_model.pkl` (model + feature schema bundle),
+  `fee_model_metrics.json` (train/test/per-service metrics + baselines), and
+  `fee_model_feature_importance.csv`.
+
+Run as a **Keboola Python transformation**: map `pricing_fee_model_input` as an
+input table (lands at `/data/in/tables/pricing_fee_model_input.csv`); outputs go
+to `/data/out/files`. Add `lightgbm` to the transformation packages.
+
+Run **locally** against a CSV export:
+
+```bash
+pip install lightgbm pandas numpy scikit-learn joblib
+FEE_INPUT_PATH=/path/to/pricing_fee_model_input.csv python machine_learning/train_fee_model.py
+```
+
+> Note: on some WSL/sandbox environments LightGBM deadlocks with `n_jobs=-1`
+> (OpenMP). The trainer defaults to `n_jobs=4`; override with `FEE_N_JOBS`.
+
+The synthetic pipeline below (`generate_training_data.py` / `train_model.py` /
+`keboola_training_script.py`) predates the real data and is kept for reference.
+
+---
+
 ## Why this exists
 
 The model previously deployed to Keboola was trained on a dataset that has since been wiped

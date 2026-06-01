@@ -56,9 +56,9 @@ You only do this once per environment.
    {
      "order_form_service_id": 4,
      "base_fee": 2400,
-     "tat": 10,
-     "facility_type": "Office",
-     "building_area": 80000,
+    "tat": 10,
+    "primary_property_type": "Office",
+    "building_area": 80000,
      "number_of_stories": 3,
      "number_of_buildings": "2",
      "country_code": "US",
@@ -96,7 +96,7 @@ You can call the PricePilot Pricing connector to quote commercial property servi
 - Use ListServices when the user asks "what services do you offer" or "what can you price".
 - Use GetQuote whenever the user wants a price/estimate/quote. At minimum you need
   order_form_service_id (1=PCA Equity, 2=ESA, 3=Zoning, 4=PCA Debt) and tat (turnaround
-  days). Ask the user for any missing facility_type, building_area, country_code,
+  days). Ask the user for any missing primary_property_type (alias facility_type), building_area, country_code,
   travel_difficulty before quoting. Always show BOTH the rule_based.total_fee and
   ml.predicted_fee, and mention the comparison.delta_pct.
 - Use GetPricingFactors when the user asks "why is the price what it is" or

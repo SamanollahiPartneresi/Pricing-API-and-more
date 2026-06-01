@@ -2,120 +2,19 @@
 Pricing Rules Calculator (Streamlit Data App).
 
 Mirrors the canonical Ruby `Pricing.main_algo` (SL_Heaven, app/models/pricing.rb)
-against the `pricing_factors` table in Keboola Storage, and (optionally) calls
-the PricePilot Flask ML API to render both predictions side-by-side.
+against the `pricing_factors` table in Keboola Storage. Rule-based; no ML.
 """
 
 from __future__ import annotations
 
 import math
-import os
-import time
 from dataclasses import dataclass
 from typing import Any
 
-import httpx
 import pandas as pd
-import requests
 import streamlit as st
 
-# ### INJECTED_CODE ####
-# ### QUERY DATA FUNCTION ####
-
-_RESULTS_PAGE_SIZE = 500
-
-
-def query_data(query: str) -> pd.DataFrame:
-    branch_id = os.environ.get("BRANCH_ID")
-    workspace_id = os.environ.get("WORKSPACE_ID")
-    token = os.environ.get("KBC_TOKEN")
-    kbc_url = os.environ.get("KBC_URL")
-
-    if not branch_id or not workspace_id or not token or not kbc_url:
-        raise RuntimeError(
-            "Missing required environment variables: BRANCH_ID, WORKSPACE_ID, KBC_TOKEN, KBC_URL."
-        )
-
-    query_service_url = kbc_url.replace("connection.", "query.", 1).rstrip("/") + "/api/v1"
-
-    if token.startswith("Bearer "):
-        headers = {"Authorization": token, "Accept": "application/json"}
-    else:
-        headers = {"X-StorageAPI-Token": token, "Accept": "application/json"}
-
-    timeout = httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=None)
-    limits = httpx.Limits(max_keepalive_connections=5, max_connections=10)
-    with httpx.Client(timeout=timeout, limits=limits) as client:
-        response = client.post(
-            f"{query_service_url}/branches/{branch_id}/workspaces/{workspace_id}/queries",
-            json={"statements": [query]},
-            headers=headers,
-        )
-        response.raise_for_status()
-        submission = response.json()
-        job_id = submission.get("queryJobId")
-        if not job_id:
-            raise RuntimeError("Query Service did not return a job identifier.")
-
-        start_ts = time.monotonic()
-        while True:
-            status_response = client.get(
-                f"{query_service_url}/queries/{job_id}", headers=headers
-            )
-            status_response.raise_for_status()
-            job_info = status_response.json()
-            status = job_info.get("status")
-            if status in {"completed", "failed", "canceled"}:
-                break
-            if time.monotonic() - start_ts > 300:
-                raise TimeoutError(f'Timed out waiting for query "{job_id}" to finish.')
-            time.sleep(1)
-
-        statements = job_info.get("statements") or []
-        if not statements:
-            raise RuntimeError("Query Service returned no statements for the executed query.")
-        statement_id = statements[0]["id"]
-
-        columns: list[str] = []
-        all_rows: list[list[str]] = []
-        offset = 0
-        total_rows = None
-
-        while True:
-            results_response = client.get(
-                f"{query_service_url}/queries/{job_id}/{statement_id}/results",
-                headers=headers,
-                params={"offset": offset, "pageSize": _RESULTS_PAGE_SIZE},
-            )
-            results_response.raise_for_status()
-            results = results_response.json()
-
-            if results.get("status") != "completed":
-                raise ValueError(f'Error when executing query "{query}": {results.get("message")}.')
-
-            if not columns:
-                columns = [col["name"] for col in results.get("columns", [])]
-                total_rows = results.get("numberOfRows")
-
-            page_rows = results.get("data", [])
-            if not page_rows:
-                break
-
-            all_rows.extend(page_rows)
-            offset += len(page_rows)
-
-            if total_rows is not None and offset >= total_rows:
-                break
-            if total_rows is None and len(page_rows) < _RESULTS_PAGE_SIZE:
-                break
-
-        data_rows = [
-            {col_name: value for col_name, value in zip(columns, row)} for row in all_rows
-        ]
-        return pd.DataFrame(data_rows)
-
-
-# ### END_OF_INJECTED_CODE ####
+{QUERY_DATA_FUNCTION}
 
 
 # Canonical constants (mirror Constants::OrderFormConstantsHelper)
@@ -685,101 +584,15 @@ def _rfp_tat_totals(df: pd.DataFrame) -> dict[str, str]:
     return {str(d): "RFP" for d in range(1, tat_count + 1)}
 
 
-# ML API integration (PricePilot Flask app, deployed as a Keboola python-js data app)
-
-
-ML_API_URL_DEFAULT = os.environ.get(
-    "ML_API_URL", "https://pricepilot-api-1304626184.hub.keboola.com"
-)
-
-
-def _ml_param(value: Any) -> str:
-    """Convert a Streamlit input to a string the Flask API will accept.
-    None/0/'' all become '' so the API sees them as 'not provided'."""
-    if value is None:
-        return ""
-    if isinstance(value, (int, float)) and value == 0:
-        return ""
-    return str(value)
-
-
-def call_ml_api(
-    base_url: str,
-    *,
-    base_fee: float,
-    tat: int,
-    portfolio_size: float,
-    building_area: float,
-    land_area: float,
-    facility_type: str,
-    secondary_property_type: str,
-    limit_of_liability: float,
-    travel_difficulty_level: int | None,
-    prior_report: str | None,
-    site_complexity: str | None,
-    country_code: str | None,
-    number_of_stories: float,
-    number_of_buildings: float,
-    total_units: float,
-    percent_units_to_inspect: float,
-    is_rfp: bool,
-    timeout_s: float = 30.0,
-) -> dict[str, Any]:
-    """Hit the PricePilot Flask API's GET /?api=true endpoint with the same inputs
-    the rule-based engine just used. Returns the parsed JSON payload, or raises."""
-    params = {
-        "api": "true",
-        "base_fee": _ml_param(base_fee),
-        "tat": _ml_param(tat),
-        "portfolio_size": _ml_param(portfolio_size),
-        "building_area": _ml_param(building_area),
-        "land_area": _ml_param(land_area),
-        "facility_type": _ml_param(facility_type),
-        "secondary_property_type": _ml_param(secondary_property_type),
-        "limit_of_liability": _ml_param(limit_of_liability),
-        "travel_difficulty": _ml_param(travel_difficulty_level),
-        "prior_report": _ml_param(prior_report),
-        "site_complexity": _ml_param(site_complexity),
-        "country_code": _ml_param(country_code),
-        "number_of_stories": _ml_param(number_of_stories),
-        "number_of_buildings": _ml_param(number_of_buildings),
-        "total_units": _ml_param(total_units),
-        "percent_units_to_inspect": _ml_param(percent_units_to_inspect),
-        "is_rfp": "true" if is_rfp else "false",
-    }
-    response = requests.get(base_url.rstrip("/") + "/", params=params, timeout=timeout_s)
-    response.raise_for_status()
-    return response.json()
-
-
 # Streamlit UI
 
 
 st.set_page_config(page_title="Pricing Rules Calculator", page_icon="📋", layout="wide")
 st.title("Pricing Rules Calculator")
 st.caption(
-    "Rule-based pricing engine + ML model side-by-side. Mirrors `Pricing.main_algo` "
-    "(SL_Heaven) against the `pricing_factors` table in Keboola Storage, and (optionally) "
-    "calls the PricePilot Flask ML API for a second opinion."
+    "Rule-based pricing engine. Mirrors the canonical `Pricing.main_algo` (SL_Heaven) "
+    "against the `pricing_factors` table in Keboola Storage."
 )
-
-
-# Sidebar: ML API config
-with st.sidebar:
-    st.markdown("### ML model (PricePilot API)")
-    ml_enabled = st.checkbox(
-        "Also call the ML model",
-        value=True,
-        help="When on, the app sends the same inputs to the Flask ML API and shows both "
-        "predictions side-by-side.",
-    )
-    ml_api_url = st.text_input(
-        "ML API URL",
-        value=ML_API_URL_DEFAULT,
-        help="Base URL of the PricePilot Flask data app. The Streamlit app calls "
-        "GET {url}/?api=true&... with the current inputs.",
-        disabled=not ml_enabled,
-    )
 
 
 @st.cache_data(ttl=300)
@@ -805,50 +618,25 @@ with st.spinner("Loading pricing factors..."):
 
 
 # Service selector (always required)
-available_service_ids = {
+service_ids = sorted(
     int(x) for x in all_factors["order_form_service_id"].dropna().unique().tolist()
-}
-if not available_service_ids:
+)
+if not service_ids:
     st.error("`pricing_factors` table is empty.")
     st.stop()
 
 # Maps `order_form_service_id` to human-readable service names.
-# Values transcribed verbatim from the SL_Heaven Service Details Management UI
-# (PLINK 353 / 301 / 346). Zoning is placeholder demo data until real Zoning
-# factors are defined.
-SERVICE_NAMES = {1: "PCA Equity", 2: "ESA", 3: "Zoning", 4: "PCA Debt"}
-
-# Production base fees from SL_Heaven Master Order Form Services list.
-# These mirror OrderFormService.base_price for algorithm-enabled services
-# (PCA Debt UID=346 = $2,400, PCA Equity UID=353 = $4,000, Phase I ESA
-# UID=301 = $2,200). Zoning is not algorithm-enabled in production; we
-# default to $2,500 as a placeholder.
-SERVICE_BASE_FEES: dict[int, float] = {
-    1: 4000.0,
-    2: 2200.0,
-    3: 2500.0,
-    4: 2400.0,
-}
-
-# Display order for the dropdown (PCA Debt → PCA Equity → ESA → Zoning).
-# Any service id not in this list is appended at the end in id order.
-SERVICE_DISPLAY_ORDER = [4, 1, 2, 3]
-service_ids = [sid for sid in SERVICE_DISPLAY_ORDER if sid in available_service_ids] + [
-    sid for sid in sorted(available_service_ids) if sid not in SERVICE_DISPLAY_ORDER
-]
+# IDs 1 and 2 use the canonical SL_Heaven coefficients
+# (PCA_EQUITY_PRICING_FACTORS_DEFAULTS / ESA_PRICING_FACTORS_DEFAULTS).
+# ID 3 (Zoning) is illustrative demo data — SL_Heaven does not yet
+# define Zoning-specific pricing factors; this will be replaced when
+# real Zoning coefficients are added.
+SERVICE_NAMES = {1: "PCA", 2: "ESA", 3: "Zoning"}
 service_options = ["— Select a service —"] + [
     SERVICE_NAMES.get(sid, f"Service {sid}") for sid in service_ids
 ]
 
-# Stage 1: Service + Primary Property Type (these drive which inputs are shown below)
-st.markdown("### 1. Service & property type")
-stage1_col1, stage1_col2 = st.columns(2)
-with stage1_col1:
-    service_label = st.selectbox("Service", service_options, index=0, key="service_pick")
-with stage1_col2:
-    facility_options = ["— Select primary property type —"] + PRIMARY_PROPERTY_TYPES
-    facility_pick = st.selectbox("Primary property type", facility_options, index=0, key="facility_pick")
-
+service_label = st.selectbox("Service", service_options, index=0, key="service_pick")
 if service_label.startswith("—"):
     st.info("Pick a service to load its pricing factors.")
     st.stop()
@@ -856,25 +644,11 @@ if service_label.startswith("—"):
 selected_service_id = service_ids[service_options.index(service_label) - 1]
 factors_df = all_factors[all_factors["order_form_service_id"] == selected_service_id].copy()
 
-if facility_pick.startswith("—"):
-    st.info(
-        "Pick a facility type. Inputs below adapt to the property type "
-        "(unit-inspection fields appear for Multi-Family / Seniors Housing; "
-        "Special Purpose triggers an automatic RFP)."
-    )
-    st.stop()
-facility_type_in = facility_pick
-
 if len(service_ids) == 1:
     st.warning(
         f"Only one service is currently seeded in `pricing_factors` "
-        f"(`order_form_service_id = {selected_service_id}`)."
-    )
-
-if selected_service_id == 3:
-    st.caption(
-        "Heads-up: Zoning factors are illustrative placeholder values until "
-        "real Zoning coefficients are added to `pricing_factors`."
+        f"(`order_form_service_id = {selected_service_id}`). "
+        "Add rows for PCA / ESA / Zoning when ready."
     )
 
 with st.expander(f"View {len(factors_df)} pricing factors for this service"):
@@ -885,56 +659,14 @@ with st.expander(f"View {len(factors_df)} pricing factors for this service"):
     )
 
 
-# Detect which size dimension this service uses from its Size descriptions.
-_size_descriptions = factors_df.loc[
-    factors_df["category"] == "Size", "description"
-].astype(str).str.lower().tolist()
-service_uses_building_sf = any("building sf" in d for d in _size_descriptions)
-service_uses_land_ac = any("land ac" in d for d in _size_descriptions)
-
-units_eligible = facility_type_in in UNIT_INSPECTION_FACILITY_TYPE
-buildings_eligible = facility_type_in in NUMBER_OF_BUILDINGS_ELIGIBLE
-size_eligible = (
-    not units_eligible
-    and facility_type_in.strip().lower() != "special purpose"
-)
-is_special_purpose = facility_type_in.strip().lower() == "special purpose"
-
-
-if is_special_purpose:
-    st.warning(
-        "Special Purpose facilities trigger an automatic RFP — only base fee, "
-        "liability, portfolio, and TAT inputs affect the result."
-    )
-
-
-def _sorted_descriptions(category: str) -> list[str]:
-    cat = factors_df[factors_df["category"] == category].copy()
-    if cat.empty:
-        return []
-    cat["_lvl"] = pd.to_numeric(cat["level"], errors="coerce")
-    cat = cat.sort_values("_lvl")
-    return cat["description"].astype(str).tolist()
-
-
-# Stage 2: Project inputs (conditional on facility type)
-st.markdown("### 2. Project inputs")
+# Project inputs
+st.markdown("### Project inputs")
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    default_base_fee = SERVICE_BASE_FEES.get(selected_service_id, 5000.0)
-    base_fee_in = st.number_input(
-        "Base fee ($)",
-        min_value=0.0,
-        value=default_base_fee,
-        step=100.0,
-        key=f"base_fee_{selected_service_id}",
-        help=(
-            f"Default ${default_base_fee:,.0f} for {service_label} (production "
-            f"OrderFormService.base_price). Override as needed."
-        ),
-    )
+    base_fee_in = st.number_input("Base fee ($)", min_value=0.0, value=5000.0, step=100.0)
     tat_in = st.number_input("Turnaround (days)", min_value=0, value=5, step=1)
+    facility_type_in = st.selectbox("Primary property type", PRIMARY_PROPERTY_TYPES, index=0)
     secondary_in = st.text_input(
         "Secondary property type",
         value="",
@@ -946,6 +678,26 @@ with col1:
         index=0,
         help="Matched case-insensitively against the International factor `description`.",
     )
+
+with col2:
+    building_area_in = st.number_input(
+        "Building area (SF)", min_value=0, value=40000, step=1000
+    )
+    land_area_in = st.number_input(
+        "Land area (acres)",
+        min_value=0.0,
+        value=0.0,
+        step=0.5,
+        help="Used by ESA Size matching (descriptions like 'Land Ac <= 4').",
+    )
+    number_of_stories_in = st.number_input(
+        "Number of stories", min_value=0, value=2, step=1
+    )
+    number_of_buildings_in = st.number_input(
+        "Number of buildings", min_value=0, value=1, step=1,
+        help="Routed to '# of Buildings 1' (Multi-Family / Seniors Housing / Storage) or "
+        "'# of Buildings 2' (everything else) based on facility type.",
+    )
     portfolio_size_in = st.number_input(
         "Portfolio size (# of properties)", min_value=0, value=1, step=1
     )
@@ -954,67 +706,15 @@ with col1:
         help="Auto-matched to the right tier in the Limit of Liability factor.",
     )
 
-with col2:
-    if size_eligible and service_uses_building_sf:
-        building_area_in = st.number_input(
-            "Building area (SF)", min_value=0, value=40000, step=1000,
-            help="Used by PCA Size matching (descriptions like 'Building SF <= 50,000').",
-        )
-    else:
-        building_area_in = 0
-        if units_eligible:
-            st.caption(
-                "Building SF — not applicable (Size is replaced by Unit Inspection "
-                "for Multi-Family / Seniors Housing)."
-            )
-        elif is_special_purpose:
-            st.caption("Building SF — not applicable for Special Purpose.")
-        else:
-            st.caption("Building SF — this service uses Land Ac instead of Building SF.")
-
-    if size_eligible and service_uses_land_ac:
-        land_area_in = st.number_input(
-            "Land area (acres)",
-            min_value=0.0,
-            value=0.0,
-            step=0.5,
-            help="Used by ESA Size matching (descriptions like 'Land Ac <= 4').",
-        )
-    else:
-        land_area_in = 0.0
-        if units_eligible:
-            st.caption(
-                "Land Ac — not applicable (Size is replaced by Unit Inspection "
-                "for Multi-Family / Seniors Housing)."
-            )
-        elif is_special_purpose:
-            st.caption("Land Ac — not applicable for Special Purpose.")
-        else:
-            st.caption("Land Ac — this service uses Building SF instead of Land Ac.")
-
-    if buildings_eligible and not is_special_purpose:
-        bld_category = (
-            "# of Buildings 1"
-            if facility_type_in in NUMBER_OF_BUILDINGS_FACILITY_TYPE_1
-            else "# of Buildings 2"
-        )
-        number_of_buildings_in = st.number_input(
-            f"Number of buildings ({bld_category})",
-            min_value=0,
-            value=1,
-            step=1,
-            help=f"This facility type routes to '{bld_category}'.",
-        )
-    else:
-        number_of_buildings_in = 0
-        st.caption("Number of buildings — not applicable for this facility type.")
-
-    number_of_stories_in = st.number_input(
-        "Number of stories", min_value=0, value=2, step=1,
-        disabled=is_special_purpose,
-    )
-
 with col3:
+    def _sorted_descriptions(category: str) -> list[str]:
+        cat = factors_df[factors_df["category"] == category].copy()
+        if cat.empty:
+            return []
+        cat["_lvl"] = pd.to_numeric(cat["level"], errors="coerce")
+        cat = cat.sort_values("_lvl")
+        return cat["description"].astype(str).tolist()
+
     travel_options = factors_df[factors_df["category"] == "Travel Difficulty"].copy()
     travel_options["_lvl"] = pd.to_numeric(travel_options["level"], errors="coerce")
     travel_options = travel_options.sort_values("_lvl")
@@ -1022,10 +722,7 @@ with col3:
         f"{row['level']} — {row['description']}"
         for _, row in travel_options.iterrows()
     ]
-    travel_pick = st.selectbox(
-        "Travel difficulty", travel_choices, index=0,
-        disabled=is_special_purpose,
-    )
+    travel_pick = st.selectbox("Travel difficulty", travel_choices, index=0)
     travel_level: int | None = (
         None if travel_pick.startswith("—") else int(travel_pick.split(" ")[0])
     )
@@ -1035,31 +732,27 @@ with col3:
         [""] + _sorted_descriptions("Prior Report"),
         index=0,
         help="Options are loaded from the pricing_factors table for this service.",
-        disabled=is_special_purpose,
     )
     site_in = st.selectbox(
         "Site complexity",
         [""] + _sorted_descriptions("Site Complexity"),
         index=0,
-        disabled=is_special_purpose,
     )
-
-    if units_eligible:
-        total_units_in = st.number_input(
-            "Total units", min_value=0, value=0, step=10,
-            help="Applied only for Multi-Family / Seniors Housing.",
-        )
-        percent_in = st.selectbox(
-            "Percent units to inspect (%)",
-            PERCENT_UNITS_TO_INSPECT,
-            index=0,
-        )
-    else:
-        total_units_in = 0
-        percent_in = 0
-        st.caption(
-            "Unit Inspection — only applicable to Multi-Family / Seniors Housing."
-        )
+    units_eligible = facility_type_in in UNIT_INSPECTION_FACILITY_TYPE
+    total_units_in = st.number_input(
+        "Total units",
+        min_value=0,
+        value=0,
+        step=10,
+        disabled=not units_eligible,
+        help="Applied only for Multi-Family / Seniors Housing.",
+    )
+    percent_in = st.selectbox(
+        "Percent units to inspect (%)",
+        PERCENT_UNITS_TO_INSPECT,
+        index=0,
+        disabled=not units_eligible,
+    )
 
 
 go = st.button("Calculate pricing", type="primary", use_container_width=True)
@@ -1089,44 +782,10 @@ result = calculate(
 )
 
 
-# Call the ML API (best-effort; failure does not block rule-based results)
-ml_payload: dict[str, Any] | None = None
-ml_error: str | None = None
-if ml_enabled:
-    with st.spinner("Calling ML model..."):
-        try:
-            ml_payload = call_ml_api(
-                ml_api_url,
-                base_fee=base_fee_in,
-                tat=int(tat_in),
-                portfolio_size=portfolio_size_in,
-                building_area=building_area_in,
-                land_area=land_area_in,
-                facility_type=facility_type_in,
-                secondary_property_type=secondary_in,
-                limit_of_liability=limit_of_liability_in,
-                travel_difficulty_level=travel_level,
-                prior_report=prior_in,
-                site_complexity=site_in,
-                country_code=country_in,
-                number_of_stories=number_of_stories_in,
-                number_of_buildings=number_of_buildings_in,
-                total_units=total_units_in,
-                percent_units_to_inspect=percent_in,
-                is_rfp=bool(result["is_rfp"]),
-            )
-            if isinstance(ml_payload, dict) and "error" in ml_payload:
-                ml_error = str(ml_payload["error"])
-                ml_payload = None
-        except Exception as exc:
-            ml_error = f"{type(exc).__name__}: {exc}"
-
-
 # Results
 st.markdown("---")
 st.markdown("### Results")
 
-st.markdown("#### Rule-based (`Pricing.main_algo`)")
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Base fee", f"${result['base_fee']:,.0f}")
 m2.metric("Subtotal", f"${result['subtotal_before_rounding']:,.0f}")
@@ -1137,47 +796,7 @@ m3.metric("Total fee", total_display)
 m4.metric("RFP?", "Yes" if result["is_rfp"] else "No")
 
 
-# ML model row (always rendered when enabled; shows either metrics or a clean error)
-if ml_enabled:
-    st.markdown("#### ML model (`PricePilot API`)")
-    if ml_payload is not None:
-        ml_predicted = float(ml_payload.get("predicted_fee") or 0.0)
-        ml_multiplier = float(ml_payload.get("predicted_multiplier") or 0.0)
-        ml_results = ml_payload.get("results") or {}
-        ml_is_rfp = bool(ml_results.get("is_rfp", result["is_rfp"]))
-
-        rule_total_for_delta = (
-            float(result["total_fee"]) if isinstance(result["total_fee"], (int, float)) else None
-        )
-        if rule_total_for_delta is not None:
-            delta_abs = ml_predicted - rule_total_for_delta
-            delta_pct = (delta_abs / rule_total_for_delta * 100.0) if rule_total_for_delta else 0.0
-            delta_label = f"${delta_abs:+,.0f} ({delta_pct:+.1f}%)"
-        else:
-            delta_label = "n/a (rules → RFP)"
-
-        n1, n2, n3, n4 = st.columns(4)
-        n1.metric("Base fee", f"${result['base_fee']:,.0f}")
-        n2.metric("Predicted fee", f"${ml_predicted:,.0f}")
-        n3.metric("Multiplier (×base)", f"{ml_multiplier:,.2f}×" if ml_multiplier else "—")
-        n4.metric("Δ vs. rule-based", delta_label)
-    elif ml_error:
-        st.error(f"ML model unavailable: {ml_error}")
-        st.caption(
-            "Rule-based result above is unaffected. Make sure the PricePilot API is running "
-            "and reachable at the URL configured in the sidebar."
-        )
-    else:
-        st.info("ML model returned no payload.")
-else:
-    st.caption("ML model call is disabled in the sidebar.")
-
-
-st.markdown("### Fee breakdown (rule-based)")
-st.caption(
-    "Per-category breakdown comes from `Pricing.main_algo`. The ML model returns a single "
-    "predicted total, not a per-category split."
-)
+st.markdown("### Fee breakdown")
 rows = []
 for col, label in FEE_COLUMNS:
     outcome: FeeOutcome = result["outcomes"][col]
@@ -1239,22 +858,17 @@ with st.expander("Input snapshot"):
                 "total_units": total_units_in,
                 "percent_units_to_inspect": percent_in,
             },
-            "result_rule_based": {
+            "result": {
                 "total_fee": result["total_fee"],
                 "is_rfp": result["is_rfp"],
                 "subtotal_before_rounding": result["subtotal_before_rounding"],
                 "fees": result["fees"],
             },
-            "result_ml": (
-                {"enabled": False}
-                if not ml_enabled
-                else {"enabled": True, "error": ml_error, "payload": ml_payload}
-            ),
         }
     )
 
 
 st.caption(
-    "Powered by Keboola Data Apps · Rule-based engine mirrors `Pricing.main_algo` "
-    "from SL_Heaven · ML model served by the PricePilot Flask data app."
+    "Powered by Keboola Data Apps · Mirrors `Pricing.main_algo` from SL_Heaven · "
+    "ML model not used."
 )
