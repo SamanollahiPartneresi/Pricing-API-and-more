@@ -251,9 +251,9 @@
         },
         "facility_type": {
           "type": "string",
-          "description": "Property type (Office, Industrial, Multi-Family, Seniors Housing, Retail, etc.)",
+          "description": "Primary property type (Office, Industrial, Multi-Family, Seniors Housing, Retail, etc.)",
           "example": "Office",
-          "x-ms-summary": "Facility type"
+          "x-ms-summary": "Primary property type"
         },
         "building_area": {
           "type": "number",

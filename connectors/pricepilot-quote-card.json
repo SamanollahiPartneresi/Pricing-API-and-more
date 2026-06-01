@@ -1,0 +1,197 @@
+{
+  "type": "AdaptiveCard",
+  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+  "version": "1.5",
+  "body": [
+    {
+      "type": "TextBlock",
+      "text": "PricePilot Quote Request",
+      "weight": "Bolder",
+      "size": "Medium",
+      "wrap": true
+    },
+    {
+      "type": "TextBlock",
+      "text": "Fill in the required fields (*), then choose Get Quote. Multi-Family / Seniors Housing: use Total units + % to inspect instead of Building size.",
+      "isSubtle": true,
+      "wrap": true,
+      "spacing": "None"
+    },
+    {
+      "type": "TextBlock",
+      "text": "Service *",
+      "weight": "Bolder",
+      "wrap": true,
+      "spacing": "Medium"
+    },
+    {
+      "type": "Input.ChoiceSet",
+      "id": "order_form_service_id",
+      "style": "compact",
+      "placeholder": "Select a service",
+      "choices": [
+        { "title": "PCA Equity ($4,000)", "value": "1" },
+        { "title": "ESA ($2,200)", "value": "2" },
+        { "title": "Zoning ($2,500)", "value": "3" },
+        { "title": "PCA Debt ($2,400)", "value": "4" }
+      ]
+    },
+    {
+      "type": "TextBlock",
+      "text": "Primary property type *",
+      "weight": "Bolder",
+      "wrap": true
+    },
+    {
+      "type": "Input.ChoiceSet",
+      "id": "facility_type",
+      "style": "compact",
+      "placeholder": "Select primary property type",
+      "choices": [
+        { "title": "Office", "value": "Office" },
+        { "title": "Industrial", "value": "Industrial" },
+        { "title": "Retail - Large", "value": "Retail - Large" },
+        { "title": "Retail - Small", "value": "Retail - Small" },
+        { "title": "Retail - Specialty", "value": "Retail - Specialty" },
+        { "title": "Multi-Family", "value": "Multi-Family" },
+        { "title": "Seniors Housing", "value": "Seniors Housing" },
+        { "title": "Healthcare", "value": "Healthcare" },
+        { "title": "Lodging", "value": "Lodging" },
+        { "title": "Manufactured Housing", "value": "Manufactured Housing" },
+        { "title": "Storage", "value": "Storage" },
+        { "title": "Special Purpose", "value": "Special Purpose" },
+        { "title": "Other", "value": "Other" }
+      ]
+    },
+    {
+      "type": "TextBlock",
+      "text": "Turnaround (business days) *",
+      "weight": "Bolder",
+      "wrap": true
+    },
+    {
+      "type": "Input.Number",
+      "id": "tat",
+      "placeholder": "e.g. 10"
+    },
+    {
+      "type": "TextBlock",
+      "text": "Building size (SF) — most property types",
+      "weight": "Bolder",
+      "wrap": true
+    },
+    {
+      "type": "Input.Number",
+      "id": "building_area",
+      "placeholder": "e.g. 80000"
+    },
+    {
+      "type": "TextBlock",
+      "text": "Multi-Family / Seniors Housing only",
+      "isSubtle": true,
+      "wrap": true,
+      "spacing": "Medium"
+    },
+    {
+      "type": "Input.Number",
+      "id": "total_units",
+      "placeholder": "Total units"
+    },
+    {
+      "type": "Input.Number",
+      "id": "percent_units_to_inspect",
+      "placeholder": "% of units to inspect (e.g. 25)"
+    },
+    {
+      "type": "TextBlock",
+      "text": "Optional details (leave blank to skip)",
+      "weight": "Bolder",
+      "wrap": true,
+      "spacing": "Medium"
+    },
+    {
+      "type": "Input.Number",
+      "id": "base_fee",
+      "placeholder": "Base fee override ($) — blank = service default"
+    },
+    {
+      "type": "Input.Number",
+      "id": "number_of_stories",
+      "placeholder": "Number of stories"
+    },
+    {
+      "type": "Input.Number",
+      "id": "number_of_buildings",
+      "placeholder": "Number of buildings"
+    },
+    {
+      "type": "Input.ChoiceSet",
+      "id": "country_code",
+      "style": "compact",
+      "placeholder": "Country (default US)",
+      "choices": [
+        { "title": "United States", "value": "US" },
+        { "title": "Canada", "value": "CA" }
+      ]
+    },
+    {
+      "type": "Input.ChoiceSet",
+      "id": "travel_difficulty",
+      "style": "compact",
+      "placeholder": "Travel difficulty",
+      "choices": [
+        { "title": "< 60 minute drive", "value": "< 60 minute drive" },
+        { "title": "1-3 hour drive", "value": "1-3 hour drive" },
+        { "title": "3-5 hour drive", "value": "3-5 hour drive" },
+        { "title": "5+ hour drive", "value": "5+ hour drive" },
+        { "title": "Easy flight", "value": "Easy flight" }
+      ]
+    },
+    {
+      "type": "Input.ChoiceSet",
+      "id": "site_complexity",
+      "style": "compact",
+      "placeholder": "Site complexity",
+      "choices": [
+        { "title": "Simple", "value": "Simple" },
+        { "title": "Average", "value": "Average" },
+        { "title": "Complicated", "value": "Complicated" }
+      ]
+    },
+    {
+      "type": "Input.ChoiceSet",
+      "id": "prior_report",
+      "style": "compact",
+      "placeholder": "Prior report",
+      "choices": [
+        { "title": "None", "value": "None" },
+        { "title": "External < 2 years", "value": "External < 2 years" },
+        { "title": "Internal < 10 years", "value": "Internal < 10 years" },
+        { "title": "Internal < 2 years", "value": "Internal < 2 years" },
+        { "title": "Internal < 6 months", "value": "Internal < 6 months" }
+      ]
+    },
+    {
+      "type": "Input.Number",
+      "id": "limit_of_liability",
+      "placeholder": "Limit of liability ($)"
+    },
+    {
+      "type": "Input.Number",
+      "id": "portfolio_size",
+      "placeholder": "Portfolio size (# of properties)"
+    },
+    {
+      "type": "Input.Number",
+      "id": "land_area",
+      "placeholder": "Land area (acres) — ESA only"
+    }
+  ],
+  "actions": [
+    {
+      "type": "Action.Submit",
+      "title": "Get Quote",
+      "data": { "action": "pricepilot_quote" }
+    }
+  ]
+}

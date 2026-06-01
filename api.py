@@ -4,7 +4,10 @@ PricePilot REST API — rule-based + ML pricing for Copilot Studio / Power Autom
 Keboola Python/JS Data App entrypoint. Listens on port 5000.
 
 GET /?api=true&order_form_service_id=4&base_fee=2400&tat=7&building_area=62000
-        &number_of_stories=3&facility_type=Office&country_code=US
+        &number_of_stories=3&primary_property_type=Office&country_code=US
+
+Note: "primary_property_type" is the preferred field name. "facility_type"
+is still accepted as a backward-compatible alias.
 
 POST /quote  (JSON body with the same fields)
 
@@ -17,6 +20,7 @@ Both endpoints run BOTH engines on each request:
 
 from __future__ import annotations
 
+import datetime
 import io
 import math
 import json
@@ -73,6 +77,22 @@ INPUT_COLUMNS = [
 NUMERIC_COLUMNS = ["base_fee", "tat", "building_area", "number_of_stories"]
 CATEGORICAL_COLUMNS = [c for c in INPUT_COLUMNS if c not in NUMERIC_COLUMNS]
 
+# --- Real-data fee model (LightGBM, rule-aligned features) ---
+# Trained by the `pricepilot_fee_model_training` transformation on historical
+# quotes; loaded from a Storage file tagged FEE_MODEL_TAG. The bundle is a dict:
+# {model, features, numeric_features, categorical_features, missing_category, ...}.
+FEE_MODEL_TAG = os.environ.get("FEE_MODEL_TAG", "pricepilot_fee_model")
+
+# order_form_service_id -> real service_type_id used by the fee model.
+# Zoning (3) is intentionally absent: the model was not trained on it.
+ORDER_FORM_TO_SERVICE_TYPE_ID = {1: "353", 2: "301", 4: "346"}
+
+# API uses ISO-ish country codes; the model learned full country names.
+COUNTRY_CODE_TO_NAME = {
+    "US": "UNITED STATES", "USA": "UNITED STATES",
+    "CA": "CANADA", "CAN": "CANADA",
+}
+
 PRICING_FACTORS_TABLE_ID = os.environ.get(
     "PRICING_FACTORS_TABLE_ID", "in.c-Pricing_Agent_Input_Data.pricing_factors"
 )
@@ -80,6 +100,7 @@ PRICING_FACTORS_TTL_SECONDS = int(os.environ.get("PRICING_FACTORS_TTL_SECONDS", 
 DEFAULT_ORDER_FORM_SERVICE_ID = int(os.environ.get("DEFAULT_ORDER_FORM_SERVICE_ID", "4"))
 
 _MODEL = None
+_FEE_MODEL = None
 _FACTORS: pd.DataFrame | None = None
 _FACTORS_LOADED_AT: float = 0.0
 
@@ -132,6 +153,47 @@ def load_model():
         warnings.simplefilter("ignore")
         _MODEL = joblib.load(io.BytesIO(content))
     return _MODEL
+
+
+def load_fee_model():
+    """Load the real-data LightGBM fee-model bundle from a Storage file tagged
+    FEE_MODEL_TAG. Returns the dict bundle (with keys `model`, `features`, …)
+    or None if unavailable."""
+    global _FEE_MODEL
+    if _FEE_MODEL is not None:
+        return _FEE_MODEL
+
+    token = os.environ.get("KBC_TOKEN")
+    base_url = os.environ.get("KBC_URL", "https://connection.keboola.com").rstrip("/")
+    if not token:
+        return None
+
+    files = requests.get(
+        f"{base_url}/v2/storage/files",
+        headers={"X-StorageApi-Token": token},
+        params={"q": f"tags:{FEE_MODEL_TAG}", "limit": 1},
+        timeout=30,
+    )
+    files.raise_for_status()
+    items = files.json()
+    if not items:
+        return None
+
+    detail = requests.get(
+        f"{base_url}/v2/storage/files/{items[0]['id']}",
+        headers={"X-StorageApi-Token": token},
+        params={"federationToken": 1},
+        timeout=30,
+    ).json()
+    url = detail.get("url")
+    if not url:
+        return None
+
+    content = requests.get(url, timeout=60).content
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        _FEE_MODEL = joblib.load(io.BytesIO(content))
+    return _FEE_MODEL
 
 
 # Pricing factors loader (Storage data-preview API, 10-minute cache)
@@ -259,7 +321,12 @@ def parse_input_row(params: dict[str, Any]) -> dict[str, Any]:
         "portfolio_size": _to_str(params.get("portfolio_size")),
         "building_area": _to_float(params.get("building_area"), 0.0),
         "land_area": _to_str(params.get("land_area")),
-        "facility_type": _to_str(params.get("facility_type"), "Industrial"),
+        # "primary_property_type" is the preferred, user-facing field name;
+        # "facility_type" is accepted as a backward-compatible alias.
+        "facility_type": _to_str(
+            params.get("primary_property_type") or params.get("facility_type"),
+            "Industrial",
+        ),
         "secondary_property_type": _to_str(params.get("secondary_property_type")),
         "limit_of_liability": _to_str(params.get("limit_of_liability")),
         "travel_difficulty": _to_str(params.get("travel_difficulty")),
@@ -338,41 +405,89 @@ def run_rule_based(input_row: dict[str, Any]) -> dict[str, Any]:
 # ML runner
 
 
+def _pos_or_nan(value: Any) -> float:
+    """Numeric value if > 0, else NaN. Mirrors training, where 'not provided'
+    size/count fields were NaN (not 0)."""
+    f = _to_float(value, 0.0)
+    return f if f > 0 else float("nan")
+
+
 def run_ml(input_row: dict[str, Any], is_rfp: bool) -> dict[str, Any]:
-    """Run the joblib model on the input row. Returns a structured dict or
-    raises with a descriptive error suitable for surfacing to the caller."""
-    model = load_model()
-    if model is None:
+    """Predict the fee with the real-data LightGBM model, mapping the rule-based
+    inputs to the model's rule-aligned feature schema. The model predicts
+    log(fee); we exponentiate back to dollars. Raises with a descriptive error
+    (e.g. for Zoning, which the model was not trained on)."""
+    bundle = load_fee_model()
+    if bundle is None:
         raise RuntimeError(
-            "ML model not loaded. Run pricing_model_training_transformation and "
-            "tag the joblib file with `pricepilot_model`."
+            "ML fee model not loaded. Run pricepilot_fee_model_training and "
+            "tag the joblib file with `pricepilot_fee_model`."
         )
 
-    feature_row = {
-        "base_fee": float(input_row["base_fee"]),
-        "tat": int(input_row["tat"]),
-        "portfolio_size": str(input_row["portfolio_size"]),
-        "building_area": float(input_row["building_area"]),
-        "land_area": str(input_row["land_area"]),
-        "facility_type": str(input_row["facility_type"]),
-        "secondary_property_type": str(input_row["secondary_property_type"]),
-        "limit_of_liability": str(input_row["limit_of_liability"]),
-        "travel_difficulty": str(input_row["travel_difficulty"]),
-        "prior_report": str(input_row["prior_report"]),
-        "site_complexity": str(input_row["site_complexity"]),
-        "country_code": str(input_row["country_code"]),
-        "number_of_stories": int(input_row["number_of_stories"]),
-        "number_of_buildings": str(input_row["number_of_buildings"]),
-        "total_units": str(input_row["total_units"]),
-        "percent_units_to_inspect": str(input_row["percent_units_to_inspect"]),
+    model = bundle["model"]
+    features = bundle["features"]
+    numeric = bundle["numeric_features"]
+    categorical = bundle["categorical_features"]
+    missing = bundle.get("missing_category", "__missing__")
+
+    sid = int(input_row["order_form_service_id"])
+    service_type_id = ORDER_FORM_TO_SERVICE_TYPE_ID.get(sid)
+    if service_type_id is None:
+        raise RuntimeError(
+            f"ML fee model was not trained for {SERVICE_NAMES.get(sid, f'service {sid}')}; "
+            "rule-based pricing is the source of record for this service."
+        )
+
+    base_fee = float(input_row["base_fee"])
+    if base_fee <= 0:
+        base_fee = float(SERVICE_BASE_FEES.get(sid, 0.0))
+
+    now = datetime.datetime.utcnow()
+    country = COUNTRY_CODE_TO_NAME.get(
+        str(input_row["country_code"]).strip().upper(),
+        str(input_row["country_code"]).strip(),
+    )
+
+    raw = {
+        "base_fee": base_fee,
+        "turn_around_time": _pos_or_nan(input_row["tat"]),
+        "building_area": _pos_or_nan(input_row["building_area"]),
+        # The API's `land_area` field carries acreage (rule engine 'Land Ac'),
+        # which maps to the model's `land_acreage`. The model's sqft `land_area`
+        # is not collected by the API, so it stays missing.
+        "land_acreage": _pos_or_nan(input_row["land_area"]),
+        "land_area": float("nan"),
+        "total_units": _pos_or_nan(input_row["total_units"]),
+        "pct_units_inspect": _pos_or_nan(input_row["percent_units_to_inspect"]),
+        "number_of_stories": _pos_or_nan(input_row["number_of_stories"]),
+        "number_of_buildings": _pos_or_nan(input_row["number_of_buildings"]),
+        "created_month": now.month,
+        "created_quarter": (now.month - 1) // 3 + 1,
+        "busy_season_flag": 1 if now.month in (3, 4, 5, 6, 7, 8) else 0,
+        "service_type_id": service_type_id,
+        "primary_property_type": _to_str(input_row["facility_type"]) or None,
+        "secondary_property_type": _to_str(input_row["secondary_property_type"]) or None,
+        "prior_report": _to_str(input_row["prior_report"]) or None,
+        "site_complexity": _to_str(input_row["site_complexity"]) or None,
+        "limit_of_liability_tier": None,
+        "country": country or None,
     }
-    features = prep_features(pd.DataFrame([feature_row]))[INPUT_COLUMNS]
-    predicted = float(model.predict(features)[0])
-    base_fee = float(input_row["base_fee"]) or 1.0
+
+    X = pd.DataFrame([raw])
+    for col in numeric:
+        X[col] = pd.to_numeric(X[col], errors="coerce")
+    for col in categorical:
+        s = X[col].astype("string").fillna(missing).replace("", missing)
+        X[col] = s.astype("category")
+    X = X[features]
+
+    pred_log = float(model.predict(X)[0])
+    predicted = math.exp(pred_log)
+    base_for_mult = base_fee or 1.0
     return {
-        "predicted_fee": int(math.ceil(predicted / 50.0) * 50),
+        "predicted_fee": int(round(predicted / 50.0) * 50),
         "predicted_fee_raw": round(predicted, 2),
-        "predicted_multiplier": round(predicted / base_fee, 4),
+        "predicted_multiplier": round(predicted / base_for_mult, 4),
         "is_rfp": bool(is_rfp),
     }
 
@@ -472,7 +587,7 @@ def root():
 
     if request.method == "GET" and request.args.get("api", "").lower() != "true":
         return jsonify({
-            "error": "Missing api=true. Example: /?api=true&order_form_service_id=4&base_fee=2400&tat=7&facility_type=Office",
+            "error": "Missing api=true. Example: /?api=true&order_form_service_id=4&base_fee=2400&tat=7&primary_property_type=Office",
         }), 400
 
     try:
