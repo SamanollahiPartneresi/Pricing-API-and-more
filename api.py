@@ -448,35 +448,40 @@ def run_ml(input_row: dict[str, Any], is_rfp: bool) -> dict[str, Any]:
         str(input_row["country_code"]).strip(),
     )
 
+    # One value per model feature (rule-aligned). The API's `land_area` field
+    # carries acreage (rule engine 'Land Ac'), which maps to the model's
+    # `land_acreage`. `created_month` is the single Time Period / busy-level
+    # signal. Build only the keys the model bundle declares; `X = X[features]`
+    # below still guards against drift if the bundle's feature set changes.
     raw = {
-        "base_fee": base_fee,
+        # base_fee is NOT a model feature (service_type_id carries that signal);
+        # it is kept above only as the multiplier denominator.
         "turn_around_time": _pos_or_nan(input_row["tat"]),
         "building_area": _pos_or_nan(input_row["building_area"]),
-        # The API's `land_area` field carries acreage (rule engine 'Land Ac'),
-        # which maps to the model's `land_acreage`. The model's sqft `land_area`
-        # is not collected by the API, so it stays missing.
         "land_acreage": _pos_or_nan(input_row["land_area"]),
-        "land_area": float("nan"),
         "total_units": _pos_or_nan(input_row["total_units"]),
         "pct_units_inspect": _pos_or_nan(input_row["percent_units_to_inspect"]),
         "number_of_stories": _pos_or_nan(input_row["number_of_stories"]),
         "number_of_buildings": _pos_or_nan(input_row["number_of_buildings"]),
         "created_month": now.month,
-        "created_quarter": (now.month - 1) // 3 + 1,
-        "busy_season_flag": 1 if now.month in (3, 4, 5, 6, 7, 8) else 0,
         "service_type_id": service_type_id,
         "primary_property_type": _to_str(input_row["facility_type"]) or None,
         "secondary_property_type": _to_str(input_row["secondary_property_type"]) or None,
         "prior_report": _to_str(input_row["prior_report"]) or None,
         "site_complexity": _to_str(input_row["site_complexity"]) or None,
-        "limit_of_liability_tier": None,
         "country": country or None,
     }
 
     X = pd.DataFrame([raw])
+    # Robust to bundle/dict drift: any feature the model expects but we didn't
+    # populate falls back to missing rather than raising KeyError.
     for col in numeric:
+        if col not in X.columns:
+            X[col] = float("nan")
         X[col] = pd.to_numeric(X[col], errors="coerce")
     for col in categorical:
+        if col not in X.columns:
+            X[col] = missing
         s = X[col].astype("string").fillna(missing).replace("", missing)
         X[col] = s.astype("category")
     X = X[features]

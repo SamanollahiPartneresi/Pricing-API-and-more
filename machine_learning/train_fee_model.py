@@ -60,29 +60,38 @@ TARGET_RAW = "fee"       # dollars, used only for reporting/baselines
 #
 # turn_around_time is parsed to a numeric day count (rule engine treats TAT
 # numerically); see prepare_features.
+# One feature per rule-based lever — no redundant/derived duplicates.
+# `created_month` is the single "Time Period / busy level" signal (it already
+# encodes quarter and busy-season, so created_quarter/busy_season_flag are
+# dropped). `land_area` (sqft) is dropped as a duplicate of `land_acreage`
+# (acres) — the latter is the dimension the rule engine and the API collect.
+# `base_fee` is intentionally EXCLUDED: it is a near-constant per service, so
+# `service_type_id` already carries the same signal. A controlled experiment
+# (logged in MODEL_LOG.md) confirmed dropping it leaves accuracy unchanged.
+# It is still carried through the split as a quote-time BASELINE only
+# (predict_base_fee), never as a model input.
 NUMERIC_FEATURES = [
-    "base_fee",
     "turn_around_time",
     "building_area",
     "land_acreage",
-    "land_area",
     "total_units",
     "pct_units_inspect",
     "number_of_stories",
     "number_of_buildings",
-    "created_month",      # "Time Period / busy level" lever
-    "created_quarter",
-    "busy_season_flag",
+    "created_month",      # single "Time Period / busy level" lever
 ]
 
 # Rule-aligned categorical levers (LightGBM handles these natively).
+# `limit_of_liability_tier` is intentionally excluded: the API can't supply it
+# at quote time (it sends the raw $ amount, not the trained 1-6 tier), so
+# training on it would create train/serve skew. Re-add once the tier<->level
+# mapping is confirmed and derived server-side.
 CATEGORICAL_FEATURES = [
     "service_type_id",
     "primary_property_type",
     "secondary_property_type",
     "prior_report",
     "site_complexity",
-    "limit_of_liability_tier",
     "country",
 ]
 
@@ -216,10 +225,16 @@ def main():
         sugg_all = pd.to_numeric(df["suggested_fee_ref"], errors="coerce").to_numpy()
     else:
         sugg_all = np.full(len(df), np.nan)
+    # base_fee is no longer a model feature, but we still carry it through the
+    # split to score the predict_base_fee baseline on the same test rows.
+    base_fee_all = (
+        pd.to_numeric(df["base_fee"], errors="coerce").fillna(0).to_numpy()
+        if "base_fee" in df.columns else np.zeros(len(df))
+    )
 
     (X_tr, X_te, ylog_tr, ylog_te, yd_tr, yd_te,
-     svc_tr, svc_te, _sugg_tr, sugg_te) = train_test_split(
-        X, y_log, y_dollars, svc_series, sugg_all,
+     svc_tr, svc_te, _sugg_tr, sugg_te, _base_tr, base_fee_te) = train_test_split(
+        X, y_log, y_dollars, svc_series, sugg_all, base_fee_all,
         test_size=0.20, random_state=RANDOM_STATE, stratify=strat,
     )
 
@@ -260,8 +275,7 @@ def main():
     }
 
     # Baselines on the SAME test set, so the model's lift is honest.
-    # (suggested_fee_ref is a benchmark only — it is NOT a model feature.)
-    base_fee_te = pd.to_numeric(X_te["base_fee"], errors="coerce").fillna(0).to_numpy()
+    # (base_fee and suggested_fee_ref are benchmarks only — NOT model features.)
     sugg_te = np.where(np.isnan(sugg_te) | (sugg_te <= 0), base_fee_te, sugg_te)
     metrics["baselines"] = {
         "predict_base_fee": regression_report(yd_te, base_fee_te),

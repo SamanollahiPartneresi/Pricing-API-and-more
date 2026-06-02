@@ -7,6 +7,7 @@ the deployed model:
 
   out.c-pricing_ml.fee_model_importance  -> fee_model_importance.csv + FEATURE_IMPORTANCE.md
   out.c-pricing_ml.fee_model_metrics     -> fee_model_metrics.csv    + MODEL_METRICS.md
+  out.c-pricing_ml.fee_model_runs        -> fee_model_runs.csv       + MODEL_LOG.md
 
 Run locally:  KBC_TOKEN=... python machine_learning/sync_model_artifacts.py
 In CI:        invoked by .github/workflows/sync-model-artifacts.yml (token from secrets).
@@ -35,11 +36,20 @@ IMPORTANCE_TABLE = os.environ.get(
 METRICS_TABLE = os.environ.get(
     "METRICS_TABLE_ID", "out.c-pricing_ml.fee_model_metrics"
 )
+RUNS_TABLE = os.environ.get(
+    "RUNS_TABLE_ID", "out.c-pricing_ml.fee_model_runs"
+)
 
 
-def fetch_table(table_id: str, token: str) -> list[dict[str, str]]:
+def fetch_table(
+    table_id: str, token: str, *, required: bool = True
+) -> list[dict[str, str]]:
     """Return rows of a Storage table via the data-preview endpoint (CSV).
-    These artifact tables are tiny (tens of rows), so a preview is sufficient."""
+    These artifact tables are tiny (tens of rows), so a preview is sufficient.
+
+    When ``required`` is False, a missing/empty table is treated as a soft skip
+    (returns []) instead of aborting — used for the append-only run log, which
+    may not exist on older deployments."""
     url = f"{KBC_URL}/v2/storage/tables/{table_id}/data-preview"
     resp = requests.get(
         url,
@@ -48,8 +58,11 @@ def fetch_table(table_id: str, token: str) -> list[dict[str, str]]:
         timeout=60,
     )
     if resp.status_code != 200:
-        # Surface the real cause in the CI log instead of a bare traceback.
         body = resp.text[:500].replace("\n", " ")
+        if not required:
+            print(f"WARN: skipping {table_id}: HTTP {resp.status_code} — {body}")
+            return []
+        # Surface the real cause in the CI log instead of a bare traceback.
         raise SystemExit(
             f"ERROR fetching {table_id}: HTTP {resp.status_code} from {url}\n"
             f"Response: {body}\n"
@@ -59,6 +72,9 @@ def fetch_table(table_id: str, token: str) -> list[dict[str, str]]:
     reader = csv.DictReader(io.StringIO(resp.text))
     rows = [dict(row) for row in reader]
     if not rows:
+        if not required:
+            print(f"WARN: {table_id} returned 0 rows — skipping.")
+            return []
         raise SystemExit(f"ERROR: {table_id} returned 0 rows. Has the training run produced it yet?")
     return rows
 
@@ -183,6 +199,107 @@ def write_metrics(rows: list[dict[str, str]]) -> None:
     (HERE / "MODEL_METRICS.md").write_text("\n".join(lines))
 
 
+# Columns of the run log rendered into MODEL_LOG.md, in display order.
+# (label, run-log key, formatter)
+RUN_COLUMNS: list[tuple[str, str, str]] = [
+    ("Run (UTC)", "run_at", "ts"),
+    ("Tag", "model_tag", "tag"),
+    ("# feats", "n_features", "int"),
+    ("Rows (train)", "rows_total", "int"),
+    ("Rows (test)", "rows_test", "int"),
+    ("MAE", "test_mae", "usd"),
+    ("RMSE", "test_rmse", "usd"),
+    ("Median err", "test_median_ape_pct", "pct"),
+    ("Mean err", "test_mape_pct", "pct"),
+    ("Within 10%", "test_within_10pct", "pct"),
+    ("Within 20%", "test_within_20pct", "pct"),
+    ("Test R²", "test_r2", "r2"),
+    ("Train R²", "train_r2", "r2"),
+]
+
+
+def _fmt_run_cell(kind: str, raw: str) -> str:
+    if raw is None or raw == "":
+        return "—"
+    if kind == "ts":
+        # 2026-06-02T22:47:15+00:00 -> 2026-06-02 22:47
+        return raw.replace("T", " ")[:16]
+    if kind == "tag":
+        # Strip the common 'pricepilot_fee_model' prefix for a compact label.
+        if raw == "pricepilot_fee_model":
+            return "prod"
+        return raw.replace("pricepilot_fee_model", "").lstrip("_") or raw
+    if kind == "int":
+        return f"{_f(raw):,.0f}"
+    if kind == "usd":
+        return f"${_f(raw):,.0f}"
+    if kind == "pct":
+        return f"{_f(raw):.1f}%"
+    if kind == "r2":
+        return f"{_f(raw):.3f}"
+    return raw
+
+
+def write_runs(rows: list[dict[str, str]]) -> None:
+    """Render the append-only training run log (newest first) into MODEL_LOG.md
+    plus a flat fee_model_runs.csv snapshot. No-op if the table is empty."""
+    if not rows:
+        return
+    ordered = sorted(rows, key=lambda r: r.get("run_at", ""), reverse=True)
+
+    # Flat CSV snapshot (stable column order, all columns from the source table).
+    csv_cols = [
+        "run_id", "run_at", "model_tag", "n_features", "rows_total", "rows_test",
+        "test_mae", "test_rmse", "test_median_ape_pct", "test_mape_pct",
+        "test_within_10pct", "test_within_20pct", "test_r2", "train_r2", "features",
+    ]
+    csv_path = HERE / "fee_model_runs.csv"
+    with csv_path.open("w", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(csv_cols)
+        for r in ordered:
+            writer.writerow([r.get(c, "") for c in csv_cols])
+
+    today = dt.date.today().isoformat()
+    header = "| " + " | ".join(label for label, _, _ in RUN_COLUMNS) + " |"
+    sep = "|" + "|".join(["---:" if i else "---" for i in range(len(RUN_COLUMNS))]) + "|"
+    lines = [
+        "# PricePilot fee model — run log",
+        "",
+        "Append-only history of every `pricepilot_fee_model_training` run, newest first.",
+        "Use it to compare model versions over time (accuracy, feature count, data size).",
+        "",
+        "- Source of truth (one row appended per retrain): Keboola table "
+        f"`{RUNS_TABLE}` (primary key `run_id`).",
+        "- Raw values: [`fee_model_runs.csv`](./fee_model_runs.csv).",
+        "- Metrics are on the 20% hold-out test split; lower error / higher "
+        '"within X%" and R² is better.',
+        "",
+        f"_Auto-synced from Keboola on {today} by `sync_model_artifacts.py`._",
+        "",
+        header,
+        sep,
+    ]
+    for r in ordered:
+        cells = [_fmt_run_cell(kind, r.get(key, "")) for _, key, kind in RUN_COLUMNS]
+        lines.append("| " + " | ".join(cells) + " |")
+    lines.append("")
+
+    # Per-run feature lists (so a reader can see exactly what changed).
+    lines.append("## Feature set per run")
+    lines.append("")
+    for r in ordered:
+        ts = _fmt_run_cell("ts", r.get("run_at", ""))
+        tag = _fmt_run_cell("tag", r.get("model_tag", ""))
+        feats = (r.get("features") or "").strip()
+        feat_md = ", ".join(f"`{f}`" for f in feats.split(",") if f) if feats else "—"
+        lines.append(
+            f"- **{ts}** · _{tag}_ ({_fmt_run_cell('int', r.get('n_features',''))} features): {feat_md}"
+        )
+    lines.append("")
+    (HERE / "MODEL_LOG.md").write_text("\n".join(lines))
+
+
 def main() -> int:
     token = os.environ.get("KBC_TOKEN")
     if not token:
@@ -192,10 +309,14 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    print(f"Stack: {KBC_URL} | token: ...{token[-4:]} | tables: {IMPORTANCE_TABLE}, {METRICS_TABLE}")
+    print(
+        f"Stack: {KBC_URL} | token: ...{token[-4:]} | tables: "
+        f"{IMPORTANCE_TABLE}, {METRICS_TABLE}, {RUNS_TABLE}"
+    )
     write_importance(fetch_table(IMPORTANCE_TABLE, token))
     write_metrics(fetch_table(METRICS_TABLE, token))
-    print("Synced fee_model_importance + fee_model_metrics artifacts.")
+    write_runs(fetch_table(RUNS_TABLE, token, required=False))
+    print("Synced fee_model_importance + fee_model_metrics + fee_model_runs artifacts.")
     return 0
 
 
