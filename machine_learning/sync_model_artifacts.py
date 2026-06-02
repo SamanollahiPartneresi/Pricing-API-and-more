@@ -26,7 +26,9 @@ from pathlib import Path
 import requests
 
 HERE = Path(__file__).resolve().parent
-KBC_URL = os.environ.get("KBC_URL", "https://connection.keboola.com").rstrip("/")
+# Use `or` (not get's default) so an empty KBC_URL env var — which CI sets when the
+# optional KBC_URL secret is absent — still falls back to the default stack.
+KBC_URL = (os.environ.get("KBC_URL") or "https://connection.keboola.com").rstrip("/")
 IMPORTANCE_TABLE = os.environ.get(
     "IMPORTANCE_TABLE_ID", "out.c-pricing_ml.fee_model_importance"
 )
