@@ -1,0 +1,57 @@
+scope,metric,value
+baseline_predict_base_fee,mae,733.7268
+baseline_predict_base_fee,mape_pct,33.8257
+baseline_predict_base_fee,median_ape_pct,15.7895
+baseline_predict_base_fee,n,28296.0
+baseline_predict_base_fee,r2_dollars,0.1893
+baseline_predict_base_fee,rmse,1209.847
+baseline_predict_base_fee,within_10pct,32.5876
+baseline_predict_base_fee,within_20pct,59.0543
+baseline_predict_suggested_fee,mae,898.7581
+baseline_predict_suggested_fee,mape_pct,45.7449
+baseline_predict_suggested_fee,median_ape_pct,21.0
+baseline_predict_suggested_fee,n,28296.0
+baseline_predict_suggested_fee,r2_dollars,-5.9868
+baseline_predict_suggested_fee,rmse,3551.803
+baseline_predict_suggested_fee,within_10pct,26.5797
+baseline_predict_suggested_fee,within_20pct,49.1801
+model_test,mae,523.176
+model_test,mape_pct,22.7113
+model_test,median_ape_pct,11.0936
+model_test,n,28296.0
+model_test,r2_dollars,0.4808
+model_test,rmse,968.1958
+model_test,within_10pct,46.0312
+model_test,within_20pct,73.1446
+model_train,mae,481.6052
+model_train,mape_pct,20.2736
+model_train,median_ape_pct,10.4565
+model_train,n,113180.0
+model_train,r2_dollars,0.5797
+model_train,rmse,876.4845
+model_train,within_10pct,48.2055
+model_train,within_20pct,75.0998
+service_test::Debt PCA,mae,416.1114
+service_test::Debt PCA,mape_pct,17.3433
+service_test::Debt PCA,median_ape_pct,9.3447
+service_test::Debt PCA,n,5267.0
+service_test::Debt PCA,r2_dollars,0.3184
+service_test::Debt PCA,rmse,689.5348
+service_test::Debt PCA,within_10pct,52.5726
+service_test::Debt PCA,within_20pct,78.071
+service_test::Equity PCA,mae,1041.4136
+service_test::Equity PCA,mape_pct,31.5028
+service_test::Equity PCA,median_ape_pct,16.559
+service_test::Equity PCA,n,6269.0
+service_test::Equity PCA,r2_dollars,0.3334
+service_test::Equity PCA,rmse,1742.009
+service_test::Equity PCA,within_10pct,34.6626
+service_test::Equity PCA,within_20pct,56.7076
+service_test::Phase I ESA,mae,362.9778
+service_test::Phase I ESA,mape_pct,21.1098
+service_test::Phase I ESA,median_ape_pct,10.4336
+service_test::Phase I ESA,n,16760.0
+service_test::Phase I ESA,r2_dollars,0.3072
+service_test::Phase I ESA,rmse,546.0119
+service_test::Phase I ESA,within_10pct,48.2279
+service_test::Phase I ESA,within_20pct,77.7446
