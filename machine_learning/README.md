@@ -37,6 +37,43 @@ FEE_INPUT_PATH=/path/to/pricing_fee_model_input.csv python machine_learning/trai
 The synthetic pipeline below (`generate_training_data.py` / `train_model.py` /
 `keboola_training_script.py`) predates the real data and is kept for reference.
 
+## Keeping GitHub in sync with the deployed model
+
+Each training run rewrites two small tables in Keboola Storage:
+`out.c-pricing_ml.fee_model_importance` and `out.c-pricing_ml.fee_model_metrics`.
+These are the **source of truth**. The committed snapshots in this folder are kept
+up to date automatically:
+
+| Committed file | Generated from |
+|---|---|
+| `fee_model_importance.csv` + `FEATURE_IMPORTANCE.md` | `out.c-pricing_ml.fee_model_importance` |
+| `fee_model_metrics.csv` + `MODEL_METRICS.md` | `out.c-pricing_ml.fee_model_metrics` |
+
+`sync_model_artifacts.py` pulls those tables and regenerates the files. It runs in
+CI via `.github/workflows/sync-model-artifacts.yml`:
+
+- **Daily** (cron) and **on demand** (Actions → "Run workflow").
+- **Right after a retrain**, if you fire a `repository_dispatch` of type
+  `model-retrained` (e.g. from an orchestration step):
+
+  ```bash
+  curl -X POST -H "Authorization: token <PAT>" \
+    -H "Accept: application/vnd.github+json" \
+    https://api.github.com/repos/SamanollahiPartneresi/Pricing-API-and-more/dispatches \
+    -d '{"event_type":"model-retrained"}'
+  ```
+
+**One-time setup (required):** add a repository secret **`KBC_TOKEN`** (a Keboola
+Storage API token that can read the `out.c-pricing_ml` bucket) under
+GitHub → Settings → Secrets and variables → Actions. Optionally add `KBC_URL`
+if your stack isn't `https://connection.keboola.com`.
+
+Run it locally too:
+
+```bash
+KBC_TOKEN=... python machine_learning/sync_model_artifacts.py
+```
+
 ---
 
 ## Why this exists
