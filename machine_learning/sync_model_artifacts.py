@@ -38,15 +38,27 @@ METRICS_TABLE = os.environ.get(
 def fetch_table(table_id: str, token: str) -> list[dict[str, str]]:
     """Return rows of a Storage table via the data-preview endpoint (CSV).
     These artifact tables are tiny (tens of rows), so a preview is sufficient."""
+    url = f"{KBC_URL}/v2/storage/tables/{table_id}/data-preview"
     resp = requests.get(
-        f"{KBC_URL}/v2/storage/tables/{table_id}/data-preview",
+        url,
         headers={"X-StorageApi-Token": token},
-        params={"limit": 10000},
+        params={"limit": 10000, "format": "rfc"},
         timeout=60,
     )
-    resp.raise_for_status()
+    if resp.status_code != 200:
+        # Surface the real cause in the CI log instead of a bare traceback.
+        body = resp.text[:500].replace("\n", " ")
+        raise SystemExit(
+            f"ERROR fetching {table_id}: HTTP {resp.status_code} from {url}\n"
+            f"Response: {body}\n"
+            "Check that the KBC_TOKEN secret is set, valid, and has READ access to "
+            f"the bucket containing {table_id} (out.c-pricing_ml)."
+        )
     reader = csv.DictReader(io.StringIO(resp.text))
-    return [dict(row) for row in reader]
+    rows = [dict(row) for row in reader]
+    if not rows:
+        raise SystemExit(f"ERROR: {table_id} returned 0 rows. Has the training run produced it yet?")
+    return rows
 
 
 def _f(value: str, default: float = 0.0) -> float:
@@ -172,8 +184,13 @@ def write_metrics(rows: list[dict[str, str]]) -> None:
 def main() -> int:
     token = os.environ.get("KBC_TOKEN")
     if not token:
-        print("ERROR: KBC_TOKEN not set.", file=sys.stderr)
+        print(
+            "ERROR: KBC_TOKEN is empty. Add it under GitHub -> Settings -> "
+            "Secrets and variables -> Actions -> New repository secret (name: KBC_TOKEN).",
+            file=sys.stderr,
+        )
         return 1
+    print(f"Stack: {KBC_URL} | token: ...{token[-4:]} | tables: {IMPORTANCE_TABLE}, {METRICS_TABLE}")
     write_importance(fetch_table(IMPORTANCE_TABLE, token))
     write_metrics(fetch_table(METRICS_TABLE, token))
     print("Synced fee_model_importance + fee_model_metrics artifacts.")
