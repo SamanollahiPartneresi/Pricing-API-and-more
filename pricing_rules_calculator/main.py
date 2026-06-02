@@ -122,6 +122,23 @@ def query_data(query: str) -> pd.DataFrame:
 
 FACTORS_TABLE = '"SAPI_10556"."in.c-Pricing_Agent_Input_Data"."pricing_factors"'
 
+# Historical awarded-fee distribution tables (built by the "Fee stats by service
+# and property" Snowflake transformation from in.c-Data_Science_Pricing_Agent.
+# pricing_fee_model_input, scoped to the last 3 years). Used to show users the
+# typical fee range (5th pct / median / 95th pct) for the selected service and
+# property type.
+FEE_STATS_BY_SERVICE_TABLE = '"SAPI_10556"."out.c-pricing_ml"."fee_stats_service_3yr"'
+FEE_STATS_BY_SERVICE_PROPERTY_TABLE = (
+    '"SAPI_10556"."out.c-pricing_ml"."fee_stats_service_property_3yr"'
+)
+
+# The app's primary-property-type labels differ slightly from the historical
+# `primary_property_type` vocabulary; map the few that don't match verbatim.
+APP_TO_HIST_PROPERTY = {
+    "Storage": "Self Storage",
+    "Seniors Housing": "Senior Housing",
+}
+
 PRIMARY_PROPERTY_TYPES = [
     "Industrial",
     "Healthcare",
@@ -706,6 +723,7 @@ def _ml_param(value: Any) -> str:
 def call_ml_api(
     base_url: str,
     *,
+    order_form_service_id: int,
     base_fee: float,
     tat: int,
     portfolio_size: float,
@@ -729,6 +747,7 @@ def call_ml_api(
     the rule-based engine just used. Returns the parsed JSON payload, or raises."""
     params = {
         "api": "true",
+        "order_form_service_id": str(order_form_service_id),
         "base_fee": _ml_param(base_fee),
         "tat": _ml_param(tat),
         "portfolio_size": _ml_param(portfolio_size),
@@ -758,9 +777,10 @@ def call_ml_api(
 st.set_page_config(page_title="Pricing Rules Calculator", page_icon="📋", layout="wide")
 st.title("Pricing Rules Calculator")
 st.caption(
-    "Rule-based pricing engine + ML model side-by-side. Mirrors `Pricing.main_algo` "
-    "(SL_Heaven) against the `pricing_factors` table in Keboola Storage, and (optionally) "
-    "calls the PricePilot Flask ML API for a second opinion."
+    "Estimate a project fee two ways at once. The **rule-based engine** applies the "
+    "official pricing factors step by step, and the **ML model** predicts a fee from "
+    "thousands of past projects. Pick a service and property type, fill in the project "
+    "details, then compare both results side by side."
 )
 
 
@@ -790,6 +810,64 @@ def load_all_factors() -> pd.DataFrame:
         df["order_form_service_id"], errors="coerce"
     ).astype("Int64")
     return df
+
+
+@st.cache_data(ttl=600)
+def load_fee_stats() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Load the precomputed historical awarded-fee percentiles (p5/median/p95,
+    last 3 years) per service and per service x primary property type."""
+    by_service = query_data(
+        'SELECT "order_form_service_id", "n", "p5_fee", "median_fee", "p95_fee" '
+        f"FROM {FEE_STATS_BY_SERVICE_TABLE}"
+    )
+    by_property = query_data(
+        'SELECT "order_form_service_id", "primary_property_type", "n", '
+        '"p5_fee", "median_fee", "p95_fee" '
+        f"FROM {FEE_STATS_BY_SERVICE_PROPERTY_TABLE}"
+    )
+    for frame in (by_service, by_property):
+        for col in ("order_form_service_id", "n", "p5_fee", "median_fee", "p95_fee"):
+            if col in frame.columns:
+                frame[col] = pd.to_numeric(frame[col], errors="coerce")
+    return by_service, by_property
+
+
+def fee_hint_caption(
+    stats_df: pd.DataFrame | None,
+    *,
+    service_id: int,
+    label: str,
+    property_type: str | None = None,
+) -> None:
+    """Render a compact one-line awarded-fee hint under a selector (5th–95th pct
+    with median, last 3 years). No-op when stats are unavailable or there's no
+    matching history."""
+    if stats_df is None:
+        return
+    mask = stats_df["order_form_service_id"] == service_id
+    if property_type is not None:
+        hist_prop = APP_TO_HIST_PROPERTY.get(property_type, property_type)
+        mask = mask & (stats_df["primary_property_type"] == hist_prop)
+    rows = stats_df[mask]
+    if rows.empty:
+        return
+    r = rows.iloc[0]
+    n = int(r["n"]) if pd.notna(r["n"]) else 0
+    p5, med, p95 = r["p5_fee"], r["median_fee"], r["p95_fee"]
+    if pd.isna(p5) or pd.isna(p95):
+        return
+    warn = " · ⚠ small sample" if 0 < n < 30 else ""
+    st.caption(
+        f"💡 {label}: **\\${p5:,.0f}–\\${p95:,.0f}** "
+        f"(median \\${med:,.0f}) · {n:,} projects, last 3 yrs{warn}"
+    )
+
+
+def na_field(label: str, reason: str) -> None:
+    """Render a greyed-out, disabled placeholder for an input that does not affect
+    the result for the current service / property type. Keeps the form grid aligned
+    and states the reason inline instead of a vague floating caption."""
+    st.text_input(label, value=f"n/a · {reason}", disabled=True)
 
 
 with st.spinner("Loading pricing factors..."):
@@ -836,14 +914,34 @@ service_options = ["— Select a service —"] + [
     SERVICE_NAMES.get(sid, f"Service {sid}") for sid in service_ids
 ]
 
+# Historical awarded-fee benchmarks (best-effort; never blocks the calculator).
+try:
+    fee_stats_by_service, fee_stats_by_property = load_fee_stats()
+except Exception:
+    fee_stats_by_service, fee_stats_by_property = None, None
+
+
 # Stage 1: Service + Primary Property Type (these drive which inputs are shown below)
 st.markdown("### 1. Service & property type")
 stage1_col1, stage1_col2 = st.columns(2)
 with stage1_col1:
     service_label = st.selectbox("Service", service_options, index=0, key="service_pick")
+    if not service_label.startswith("—"):
+        _sid = service_ids[service_options.index(service_label) - 1]
+        fee_hint_caption(
+            fee_stats_by_service, service_id=_sid, label=f"Typical {service_label} fee"
+        )
 with stage1_col2:
     facility_options = ["— Select primary property type —"] + PRIMARY_PROPERTY_TYPES
     facility_pick = st.selectbox("Primary property type", facility_options, index=0, key="facility_pick")
+    if not service_label.startswith("—") and not facility_pick.startswith("—"):
+        _sid = service_ids[service_options.index(service_label) - 1]
+        fee_hint_caption(
+            fee_stats_by_property,
+            service_id=_sid,
+            label=f"Typical {facility_pick} fee",
+            property_type=facility_pick,
+        )
 
 if service_label.startswith("—"):
     st.info("Pick a service to load its pricing factors.")
@@ -854,7 +952,7 @@ factors_df = all_factors[all_factors["order_form_service_id"] == selected_servic
 
 if facility_pick.startswith("—"):
     st.info(
-        "Pick a facility type. Inputs below adapt to the property type "
+        "Pick a facility type — inputs below adapt to the property type "
         "(unit-inspection fields appear for Multi-Family / Seniors Housing; "
         "Special Purpose triggers an automatic RFP)."
     )
@@ -874,11 +972,50 @@ if selected_service_id == 3:
     )
 
 with st.expander(f"View {len(factors_df)} pricing factors for this service"):
-    st.dataframe(
-        factors_df[["category", "level", "description", "value"]],
-        width="stretch",
-        hide_index=True,
+    st.caption(
+        "Grouped by pricing lever. Each option shows the adjustment the rule "
+        "engine applies for that choice; **RFP** means that option forces a "
+        "manual quote."
     )
+
+    _view = factors_df[["category", "level", "description", "value"]].copy()
+    _view["category"] = _view["category"].astype(str)
+    _view["__rfp"] = _view["value"].astype(str).str.strip().str.upper().eq("RFP")
+    _view["__lvl"] = pd.to_numeric(_view["level"], errors="coerce")
+    # Stable order: categories as they first appear in the table.
+    _categories = list(dict.fromkeys(_view["category"].tolist()))
+
+    _picked = st.multiselect(
+        "Filter levers",
+        _categories,
+        default=_categories,
+        key="factor_filter",
+        help="Show only the pricing levers you want to inspect.",
+    )
+    _shown = [c for c in _categories if c in _picked] or _categories
+
+    _factor_cfg = {
+        "level": st.column_config.TextColumn("Level", width="small"),
+        "description": st.column_config.TextColumn("Option", width="large"),
+        "value": st.column_config.TextColumn("Adjustment", width="small"),
+    }
+    _cols = st.columns(2)
+    for _i, _cat in enumerate(_shown):
+        _block = _view[_view["category"] == _cat].sort_values(
+            ["__lvl", "level"], na_position="last"
+        )
+        _n_rfp = int(_block["__rfp"].sum())
+        _sub = f"**{_cat}** — {len(_block)} option(s)"
+        if _n_rfp:
+            _sub += f", {_n_rfp} → RFP"
+        with _cols[_i % 2]:
+            st.markdown(_sub)
+            st.dataframe(
+                _block[["level", "description", "value"]],
+                width="stretch",
+                hide_index=True,
+                column_config=_factor_cfg,
+            )
 
 
 # Detect which size dimension this service uses from its Size descriptions.
@@ -959,14 +1096,11 @@ with col2:
     else:
         building_area_in = 0
         if units_eligible:
-            st.caption(
-                "Building SF — not applicable (Size is replaced by Unit Inspection "
-                "for Multi-Family / Seniors Housing)."
-            )
+            na_field("Building area (SF)", "replaced by Unit Inspection")
         elif is_special_purpose:
-            st.caption("Building SF — not applicable for Special Purpose.")
+            na_field("Building area (SF)", "not used (auto-RFP)")
         else:
-            st.caption("Building SF — this service uses Land Ac instead of Building SF.")
+            na_field("Building area (SF)", "this service uses Land Ac")
 
     if size_eligible and service_uses_land_ac:
         land_area_in = st.number_input(
@@ -979,14 +1113,11 @@ with col2:
     else:
         land_area_in = 0.0
         if units_eligible:
-            st.caption(
-                "Land Ac — not applicable (Size is replaced by Unit Inspection "
-                "for Multi-Family / Seniors Housing)."
-            )
+            na_field("Land area (acres)", "replaced by Unit Inspection")
         elif is_special_purpose:
-            st.caption("Land Ac — not applicable for Special Purpose.")
+            na_field("Land area (acres)", "not used (auto-RFP)")
         else:
-            st.caption("Land Ac — this service uses Building SF instead of Land Ac.")
+            na_field("Land area (acres)", "this service uses Building SF")
 
     if buildings_eligible and not is_special_purpose:
         bld_category = (
@@ -1003,7 +1134,10 @@ with col2:
         )
     else:
         number_of_buildings_in = 0
-        st.caption("Number of buildings — not applicable for this facility type.")
+        na_field(
+            "Number of buildings",
+            "not used (auto-RFP)" if is_special_purpose else "not used for this property type",
+        )
 
     number_of_stories_in = st.number_input(
         "Number of stories", min_value=0, value=2, step=1,
@@ -1053,9 +1187,8 @@ with col3:
     else:
         total_units_in = 0
         percent_in = 0
-        st.caption(
-            "Unit Inspection — only applicable to Multi-Family / Seniors Housing."
-        )
+        na_field("Total units", "only Multi-Family / Seniors Housing")
+        na_field("Percent units to inspect (%)", "only Multi-Family / Seniors Housing")
 
 
 go = st.button("Calculate pricing", type="primary", use_container_width=True)
@@ -1093,6 +1226,7 @@ if ml_enabled:
         try:
             ml_payload = call_ml_api(
                 ml_api_url,
+                order_form_service_id=selected_service_id,
                 base_fee=base_fee_in,
                 tat=int(tat_in),
                 portfolio_size=portfolio_size_in,
@@ -1122,41 +1256,78 @@ if ml_enabled:
 st.markdown("---")
 st.markdown("### Results")
 
-st.markdown("#### Rule-based (`Pricing.main_algo`)")
-m1, m2, m3, m4 = st.columns(4)
+st.markdown("#### Rule-based estimate")
+m1, m2, m3 = st.columns(3)
 m1.metric("Base fee", f"${result['base_fee']:,.0f}")
 m2.metric("Subtotal", f"${result['subtotal_before_rounding']:,.0f}")
 total_display = (
     "RFP" if result["total_fee"] == "RFP" else f"${result['total_fee']:,.0f}"
 )
 m3.metric("Total fee", total_display)
-m4.metric("RFP?", "Yes" if result["is_rfp"] else "No")
+if result["is_rfp"]:
+    rfp_labels = [
+        label for col, label in FEE_COLUMNS if result["fees"].get(col) == "RFP"
+    ]
+    if facility_type_in.strip().lower() == "special purpose":
+        reason_short = "the **Special Purpose** property type"
+    elif rfp_labels:
+        reason_short = "**" + "**, **".join(rfp_labels) + "**"
+    else:
+        reason_short = "these inputs"
+    m3.warning(f"Manual quote needed — because of {reason_short}.")
 
 
 # ML model row (always rendered when enabled; shows either metrics or a clean error)
 if ml_enabled:
-    st.markdown("#### ML model (`PricePilot API`)")
+    st.markdown("#### ML model prediction")
     if ml_payload is not None:
         ml_predicted = float(ml_payload.get("predicted_fee") or 0.0)
-        ml_multiplier = float(ml_payload.get("predicted_multiplier") or 0.0)
         ml_results = ml_payload.get("results") or {}
         ml_is_rfp = bool(ml_results.get("is_rfp", result["is_rfp"]))
+
+        base = float(result["base_fee"]) or 0.0
+        uplift_pct = (ml_predicted / base - 1.0) * 100.0 if base else 0.0
 
         rule_total_for_delta = (
             float(result["total_fee"]) if isinstance(result["total_fee"], (int, float)) else None
         )
+
+        n1, n2, n3 = st.columns(3)
+        n1.metric(
+            "Base fee",
+            f"${result['base_fee']:,.0f}",
+            help="Starting fee for this service before any adjustments.",
+        )
+        n2.metric(
+            "Predicted fee",
+            f"${ml_predicted:,.0f}",
+            delta=f"{uplift_pct:+.0f}% vs. base fee",
+            delta_color="off",
+            help=(
+                "The ML model's single best estimate of the awarded fee for these "
+                "inputs, learned from historical projects. The percentage shows how "
+                "much higher/lower it is than the base fee."
+            ),
+        )
         if rule_total_for_delta is not None:
             delta_abs = ml_predicted - rule_total_for_delta
             delta_pct = (delta_abs / rule_total_for_delta * 100.0) if rule_total_for_delta else 0.0
-            delta_label = f"${delta_abs:+,.0f} ({delta_pct:+.1f}%)"
+            n3.metric(
+                "vs. rule-based total",
+                f"${delta_abs:+,.0f}",
+                delta=f"{delta_pct:+.1f}%",
+                delta_color="off",
+                help="How the ML prediction compares to the rule-based total fee above.",
+            )
         else:
-            delta_label = "n/a (rules → RFP)"
-
-        n1, n2, n3, n4 = st.columns(4)
-        n1.metric("Base fee", f"${result['base_fee']:,.0f}")
-        n2.metric("Predicted fee", f"${ml_predicted:,.0f}")
-        n3.metric("Multiplier (×base)", f"{ml_multiplier:,.2f}×" if ml_multiplier else "—")
-        n4.metric("Δ vs. rule-based", delta_label)
+            n3.metric(
+                "vs. rule-based total",
+                "—",
+                help=(
+                    "The rule-based engine returned RFP (manual quote), so there is "
+                    "no fixed total to compare the ML prediction against."
+                ),
+            )
     elif ml_error:
         st.error(f"ML model unavailable: {ml_error}")
         st.caption(
@@ -1171,7 +1342,7 @@ else:
 
 st.markdown("### Fee breakdown (rule-based)")
 st.caption(
-    "Per-category breakdown comes from `Pricing.main_algo`. The ML model returns a single "
+    "Shows how each pricing factor adjusts the base fee. The ML model returns a single "
     "predicted total, not a per-category split."
 )
 rows = []
@@ -1251,6 +1422,5 @@ with st.expander("Input snapshot"):
 
 
 st.caption(
-    "Powered by Keboola Data Apps · Rule-based engine mirrors `Pricing.main_algo` "
-    "from SL_Heaven · ML model served by the PricePilot Flask data app."
+    "Powered by Keboola Data Apps · Rule-based engine + PricePilot ML model."
 )
