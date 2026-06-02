@@ -1,0 +1,53 @@
+name: Sync model artifacts from Keboola
+
+# Keeps the committed fee-model snapshots (feature importance + accuracy metrics)
+# in sync with the deployed model in Keboola. Runs on a schedule, on demand, and
+# can be triggered right after a retrain via repository_dispatch (see README).
+
+on:
+  schedule:
+    - cron: "0 13 * * *"   # daily at 13:00 UTC
+  workflow_dispatch: {}
+  repository_dispatch:
+    types: [model-retrained]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-model-artifacts
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Sync artifacts from Keboola Storage
+        env:
+          KBC_TOKEN: ${{ secrets.KBC_TOKEN }}
+          KBC_URL: ${{ secrets.KBC_URL }}
+        run: python machine_learning/sync_model_artifacts.py
+
+      - name: Commit changes if any
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if [ -n "$(git status --porcelain machine_learning)" ]; then
+            git add machine_learning/fee_model_importance.csv \
+                    machine_learning/fee_model_metrics.csv \
+                    machine_learning/FEATURE_IMPORTANCE.md \
+                    machine_learning/MODEL_METRICS.md
+            git commit -m "chore: sync fee-model artifacts from Keboola [skip ci]"
+            git push
+          else
+            echo "No changes — model artifacts already up to date."
+          fi
