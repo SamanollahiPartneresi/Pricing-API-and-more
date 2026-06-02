@@ -13,22 +13,17 @@ _Auto-synced from Keboola on 2026-06-02 by `sync_model_artifacts.py`._
 
 | Rank | Feature | Gain | Share |
 |---:|---|---:|---:|
-| 1 | `base_fee` | 39,954 | 22.5% |
-| 2 | `turn_around_time` | 32,945 | 18.5% |
-| 3 | `building_area` | 16,174 | 9.1% |
-| 4 | `land_acreage` | 15,372 | 8.6% |
-| 5 | `secondary_property_type` | 12,159 | 6.8% |
-| 6 | `created_month` | 11,865 | 6.7% |
-| 7 | `primary_property_type` | 11,849 | 6.7% |
-| 8 | `land_area` | 10,328 | 5.8% |
-| 9 | `service_type_id` | 5,243 | 3.0% |
-| 10 | `number_of_buildings` | 3,966 | 2.2% |
-| 11 | `total_units` | 3,573 | 2.0% |
-| 12 | `country` | 3,369 | 1.9% |
-| 13 | `number_of_stories` | 2,744 | 1.5% |
-| 14 | `site_complexity` | 1,954 | 1.1% |
-| 15 | `busy_season_flag` | 1,664 | 0.9% |
-| 16 | `limit_of_liability_tier` | 1,614 | 0.9% |
-| 17 | `created_quarter` | 1,613 | 0.9% |
-| 18 | `pct_units_inspect` | 1,337 | 0.8% |
-| 19 | `prior_report` | 0 | 0.0% |
+| 1 | `service_type_id` | 44,404 | 25.5% |
+| 2 | `turn_around_time` | 33,235 | 19.1% |
+| 3 | `land_acreage` | 21,367 | 12.3% |
+| 4 | `building_area` | 17,336 | 10.0% |
+| 5 | `created_month` | 15,349 | 8.8% |
+| 6 | `secondary_property_type` | 12,571 | 7.2% |
+| 7 | `primary_property_type` | 11,671 | 6.7% |
+| 8 | `number_of_buildings` | 4,234 | 2.4% |
+| 9 | `total_units` | 3,671 | 2.1% |
+| 10 | `country` | 3,527 | 2.0% |
+| 11 | `number_of_stories` | 2,981 | 1.7% |
+| 12 | `site_complexity` | 2,078 | 1.2% |
+| 13 | `pct_units_inspect` | 1,520 | 0.9% |
+| 14 | `prior_report` | 0 | 0.0% |
