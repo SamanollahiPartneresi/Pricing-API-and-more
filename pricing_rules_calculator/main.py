@@ -1160,8 +1160,8 @@ if ml_enabled:
     elif ml_error:
         st.error(f"ML model unavailable: {ml_error}")
         st.caption(
-            "Rule-based result above is unaffected. Make sure the PricePilot API is running "
-            "and reachable at the URL configured in the sidebar."
+            "Rule-based result above is unaffected. The PricePilot API may be waking "
+            "from sleep — try again in a few seconds."
         )
     else:
         st.info("ML model returned no payload.")
