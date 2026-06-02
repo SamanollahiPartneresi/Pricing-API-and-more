@@ -44,7 +44,7 @@ def fetch_table(table_id: str, token: str) -> list[dict[str, str]]:
     resp = requests.get(
         url,
         headers={"X-StorageApi-Token": token},
-        params={"limit": 10000, "format": "rfc"},
+        params={"limit": 1000, "format": "rfc"},
         timeout=60,
     )
     if resp.status_code != 200:
