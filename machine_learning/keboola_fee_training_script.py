@@ -27,15 +27,22 @@ RANDOM_STATE = 42
 MISSING_CATEGORY = "__missing__"
 
 # Rule-aligned features (mirror the rule engine's levers; deployable on a fresh
-# quote). turn_around_time is parsed to a numeric day count.
+# quote). turn_around_time is parsed to a numeric day count. One feature per
+# lever: created_month is the single "Time Period / busy level" signal (drops
+# the redundant created_quarter/busy_season_flag), land_area (sqft) is dropped
+# as a duplicate of land_acreage, and limit_of_liability_tier is excluded
+# because the API can't supply the trained tier at quote time (train/serve skew).
+# base_fee is also EXCLUDED: near-constant per service, so service_type_id
+# carries the same signal (a logged experiment showed no accuracy change). It is
+# still carried through the split for the predict_base_fee baseline only.
 NUMERIC_FEATURES = [
-    "base_fee", "turn_around_time", "building_area", "land_acreage", "land_area",
+    "turn_around_time", "building_area", "land_acreage",
     "total_units", "pct_units_inspect", "number_of_stories", "number_of_buildings",
-    "created_month", "created_quarter", "busy_season_flag",
+    "created_month",
 ]
 CATEGORICAL_FEATURES = [
     "service_type_id", "primary_property_type", "secondary_property_type",
-    "prior_report", "site_complexity", "limit_of_liability_tier", "country",
+    "prior_report", "site_complexity", "country",
 ]
 FEATURES = NUMERIC_FEATURES + CATEGORICAL_FEATURES
 
@@ -97,10 +104,15 @@ if "suggested_fee_ref" in df.columns:
     sugg_all = pd.to_numeric(df["suggested_fee_ref"], errors="coerce").to_numpy()
 else:
     sugg_all = np.full(len(df), np.nan)
+# base_fee is no longer a feature; carry it through the split for the baseline.
+base_fee_all = (
+    pd.to_numeric(df["base_fee"], errors="coerce").fillna(0).to_numpy()
+    if "base_fee" in df.columns else np.zeros(len(df))
+)
 
 (X_tr, X_te, ylog_tr, ylog_te, yd_tr, yd_te,
- svc_tr, svc_te, _sugg_tr, sugg_te) = train_test_split(
-    X, y_log, y_dollars, svc_series, sugg_all,
+ svc_tr, svc_te, _sugg_tr, sugg_te, _base_tr, base_te) = train_test_split(
+    X, y_log, y_dollars, svc_series, sugg_all, base_fee_all,
     test_size=0.20, random_state=RANDOM_STATE, stratify=strat,
 )
 
@@ -117,7 +129,6 @@ print("Model trained")
 pred_te = np.exp(model.predict(X_te))
 pred_tr = np.exp(model.predict(X_tr))
 
-base_te = pd.to_numeric(X_te["base_fee"], errors="coerce").fillna(0).to_numpy()
 sugg_te = np.where(np.isnan(sugg_te) | (sugg_te <= 0), base_te, sugg_te)
 
 rows = []
