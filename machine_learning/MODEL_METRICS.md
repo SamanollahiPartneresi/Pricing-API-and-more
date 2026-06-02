@@ -13,36 +13,36 @@ _Auto-synced from Keboola on 2026-06-02 by `sync_model_artifacts.py`._
 | Metric | model_test | baseline_predict_base_fee | baseline_predict_suggested_fee |
 |---|---:|---:|---:|
 | Rows | 28,296 | 28,296 | 28,296 |
-| MAE | $523 | $734 | $899 |
-| RMSE | $968 | $1,210 | $3,552 |
-| Median error | 11.1% | 15.8% | 21.0% |
-| Mean error (MAPE) | 22.7% | 33.8% | 45.7% |
-| Within 10% | 46.0% | 32.6% | 26.6% |
-| Within 20% | 73.1% | 59.1% | 49.2% |
-| R² (dollars) | 0.481 | 0.189 | -5.987 |
+| MAE | $530 | $734 | $899 |
+| RMSE | $973 | $1,210 | $3,552 |
+| Median error | 11.3% | 15.8% | 21.0% |
+| Mean error (MAPE) | 23.0% | 33.8% | 45.7% |
+| Within 10% | 45.5% | 32.6% | 26.6% |
+| Within 20% | 72.5% | 59.1% | 49.2% |
+| R² (dollars) | 0.475 | 0.189 | -5.987 |
 
 ### Train vs. test (overfit check)
 
 | Metric | model_train | model_test |
 |---|---:|---:|
 | Rows | 113,180 | 28,296 |
-| MAE | $482 | $523 |
-| RMSE | $876 | $968 |
-| Median error | 10.5% | 11.1% |
-| Mean error (MAPE) | 20.3% | 22.7% |
-| Within 10% | 48.2% | 46.0% |
-| Within 20% | 75.1% | 73.1% |
-| R² (dollars) | 0.580 | 0.481 |
+| MAE | $490 | $530 |
+| RMSE | $888 | $973 |
+| Median error | 10.7% | 11.3% |
+| Mean error (MAPE) | 20.7% | 23.0% |
+| Within 10% | 47.4% | 45.5% |
+| Within 20% | 74.3% | 72.5% |
+| R² (dollars) | 0.568 | 0.475 |
 
 ### Per-service (test set)
 
 | Metric | service_test::Debt PCA | service_test::Equity PCA | service_test::Phase I ESA |
 |---|---:|---:|---:|
 | Rows | 5,267 | 6,269 | 16,760 |
-| MAE | $416 | $1,041 | $363 |
-| RMSE | $690 | $1,742 | $546 |
-| Median error | 9.3% | 16.6% | 10.4% |
-| Mean error (MAPE) | 17.3% | 31.5% | 21.1% |
-| Within 10% | 52.6% | 34.7% | 48.2% |
-| Within 20% | 78.1% | 56.7% | 77.7% |
-| R² (dollars) | 0.318 | 0.333 | 0.307 |
+| MAE | $423 | $1,055 | $367 |
+| RMSE | $698 | $1,749 | $549 |
+| Median error | 9.3% | 17.1% | 10.6% |
+| Mean error (MAPE) | 17.6% | 31.9% | 21.3% |
+| Within 10% | 52.6% | 33.4% | 47.8% |
+| Within 20% | 77.3% | 55.8% | 77.3% |
+| R² (dollars) | 0.302 | 0.328 | 0.299 |
