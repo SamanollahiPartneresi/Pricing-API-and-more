@@ -1292,12 +1292,7 @@ if ml_enabled:
             float(result["total_fee"]) if isinstance(result["total_fee"], (int, float)) else None
         )
 
-        n1, n2, n3 = st.columns(3)
-        n1.metric(
-            "Base fee",
-            f"${result['base_fee']:,.0f}",
-            help="Starting fee for this service before any adjustments.",
-        )
+        n2, n3 = st.columns(2)
         n2.metric(
             "Predicted fee",
             f"${ml_predicted:,.0f}",
