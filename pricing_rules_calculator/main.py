@@ -1328,6 +1328,19 @@ if ml_enabled:
                     "no fixed total to compare the ML prediction against."
                 ),
             )
+
+        ml_low = ml_payload.get("predicted_low")
+        ml_high = ml_payload.get("predicted_high")
+        if ml_high:
+            st.info(
+                f"**Likely range: ${ml_low:,.0f} – ${ml_high:,.0f}**  "
+                f"(50th–85th percentile of comparable past projects)"
+            )
+            st.caption(
+                "The predicted fee above is the *most-likely* number. Fees are "
+                "right-skewed, so premium, complex, or busy-period jobs land toward "
+                "the top of this range — use the upper bound as a high estimate."
+            )
     elif ml_error:
         st.error(f"ML model unavailable: {ml_error}")
         st.caption(

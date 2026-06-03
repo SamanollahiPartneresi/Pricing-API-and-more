@@ -489,12 +489,33 @@ def run_ml(input_row: dict[str, Any], is_rfp: bool) -> dict[str, Any]:
     pred_log = float(model.predict(X)[0])
     predicted = math.exp(pred_log)
     base_for_mult = base_fee or 1.0
-    return {
-        "predicted_fee": int(round(predicted / 50.0) * 50),
+
+    def _round50(value: float) -> int:
+        return int(round(value / 50.0) * 50)
+
+    out: dict[str, Any] = {
+        "predicted_fee": _round50(predicted),
         "predicted_fee_raw": round(predicted, 2),
         "predicted_multiplier": round(predicted / base_for_mult, 4),
         "is_rfp": bool(is_rfp),
     }
+
+    # Predicted RANGE from the bundle's quantile models (p50 / p85). The point
+    # estimate above is the most-likely fee; on right-skewed / premium jobs it
+    # reads low, so the range shows how high the fee realistically goes.
+    qmodels = bundle.get("quantile_models") or {}
+    p50 = math.exp(float(qmodels["0.5"].predict(X)[0])) if "0.5" in qmodels else None
+    p85 = math.exp(float(qmodels["0.85"].predict(X)[0])) if "0.85" in qmodels else None
+    if p85 is not None:
+        # Keep the band monotone even if the independently-fit quantiles cross.
+        low_raw = min(v for v in (p50, predicted) if v is not None)
+        high_raw = max(v for v in (p85, p50, predicted) if v is not None)
+        out["predicted_low"] = _round50(low_raw)
+        out["predicted_high"] = _round50(high_raw)
+        out["predicted_low_raw"] = round(low_raw, 2)
+        out["predicted_high_raw"] = round(high_raw, 2)
+        out["range_quantiles"] = bundle.get("quantiles", [0.5, 0.85])
+    return out
 
 
 # Response assembly + comparison
@@ -517,6 +538,8 @@ def assemble_response(input_row: dict[str, Any]) -> dict[str, Any]:
     comparison: dict[str, Any] = {
         "rule_based_total": rule_total,
         "ml_total": ml_total,
+        "ml_low": ml_result.get("predicted_low") if ml_result else None,
+        "ml_high": ml_result.get("predicted_high") if ml_result else None,
         "delta_abs": None,
         "delta_pct": None,
         "rule_based_is_rfp": rule_based["is_rfp"],
