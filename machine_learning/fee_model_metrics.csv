@@ -15,6 +15,10 @@ baseline_predict_suggested_fee,r2_dollars,-5.9868
 baseline_predict_suggested_fee,rmse,3551.803
 baseline_predict_suggested_fee,within_10pct,26.5797
 baseline_predict_suggested_fee,within_20pct,49.1801
+bias,median_pred_over_actual_raw,0.9687
+bias,smearing_factor,1.0372
+bias,sum_pred_over_actual_raw,0.9547
+bias,sum_pred_over_actual_smeared,0.9902
 model_test,mae,529.6705
 model_test,mape_pct,22.9879
 model_test,median_ape_pct,11.3418
@@ -23,6 +27,14 @@ model_test,r2_dollars,0.4755
 model_test,rmse,973.162
 model_test,within_10pct,45.5259
 model_test,within_20pct,72.5262
+model_test_smeared,mae,538.8565
+model_test_smeared,mape_pct,24.2027
+model_test_smeared,median_ape_pct,12.0669
+model_test_smeared,n,28296.0
+model_test_smeared,r2_dollars,0.4863
+model_test_smeared,rmse,963.1273
+model_test_smeared,within_10pct,42.6739
+model_test_smeared,within_20pct,70.9676
 model_train,mae,490.462
 model_train,mape_pct,20.6727
 model_train,median_ape_pct,10.7416
@@ -31,6 +43,9 @@ model_train,r2_dollars,0.5681
 model_train,rmse,888.4401
 model_train,within_10pct,47.4192
 model_train,within_20pct,74.3365
+quantile,mean_p85_over_point,1.277
+quantile,p50_coverage_pct,49.86
+quantile,p85_coverage_pct,84.12
 service_test::Debt PCA,mae,423.1946
 service_test::Debt PCA,mape_pct,17.6355
 service_test::Debt PCA,median_ape_pct,9.3408
