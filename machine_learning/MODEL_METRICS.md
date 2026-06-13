@@ -6,7 +6,7 @@ naive baselines. Lower error / higher "within X%" and R² is better.
 - Source of truth (regenerated on every retrain): Keboola table `out.c-pricing_ml.fee_model_metrics`.
 - Raw values: [`fee_model_metrics.csv`](./fee_model_metrics.csv).
 
-_Auto-synced from Keboola on 2026-06-12 by `sync_model_artifacts.py`._
+_Auto-synced from Keboola on 2026-06-13 by `sync_model_artifacts.py`._
 
 ### Model vs. baselines (test set)
 
