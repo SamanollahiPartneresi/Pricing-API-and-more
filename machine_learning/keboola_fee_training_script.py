@@ -42,7 +42,7 @@ NUMERIC_FEATURES = [
 ]
 CATEGORICAL_FEATURES = [
     "service_type_id", "primary_property_type", "secondary_property_type",
-    "prior_report", "site_complexity", "country",
+    "prior_report", "site_complexity", "country", "customer_type",
 ]
 FEATURES = NUMERIC_FEATURES + CATEGORICAL_FEATURES
 

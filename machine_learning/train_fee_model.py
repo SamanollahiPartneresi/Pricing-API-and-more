@@ -2,7 +2,7 @@
 PricePilot fee model trainer — trained on REAL historical quotes.
 
 Source table: `pricing_fee_model_input` (Keboola bucket
-`Data_Science_Pricing_Agent`), the cleaned/winsorized quote dataset
+`pricing-data-transformation`), the cleaned/winsorized quote dataset
 (~141k rows: Phase I ESA, Equity PCA, Debt PCA). Target is `log_fee`
 (= natural log of the awarded scope fee); predictions are exponentiated
 back to dollars for reporting.
@@ -93,6 +93,7 @@ CATEGORICAL_FEATURES = [
     "prior_report",
     "site_complexity",
     "country",
+    "customer_type",
 ]
 
 FEATURES = NUMERIC_FEATURES + CATEGORICAL_FEATURES

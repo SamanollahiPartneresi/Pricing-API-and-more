@@ -123,7 +123,7 @@ def query_data(query: str) -> pd.DataFrame:
 FACTORS_TABLE = '"SAPI_10556"."in.c-Pricing_Agent_Input_Data"."pricing_factors"'
 
 # Historical awarded-fee distribution tables (built by the "Fee stats by service
-# and property" Snowflake transformation from in.c-Data_Science_Pricing_Agent.
+# and property" Snowflake transformation from in.c-pricing-data-transformation.
 # pricing_fee_model_input, scoped to the last 3 years). Used to show users the
 # typical fee range (5th pct / median / 95th pct) for the selected service and
 # property type.
@@ -131,6 +131,20 @@ FEE_STATS_BY_SERVICE_TABLE = '"SAPI_10556"."out.c-pricing_ml"."fee_stats_service
 FEE_STATS_BY_SERVICE_PROPERTY_TABLE = (
     '"SAPI_10556"."out.c-pricing_ml"."fee_stats_service_property_3yr"'
 )
+
+# Distinct secondary property types (per service, count >= 20, last 3 years),
+# built by the same "Fee stats by service and property" transformation. Used to
+# populate the Secondary property type dropdown with real historical values.
+SECONDARY_PROPERTY_TYPES_TABLE = (
+    '"SAPI_10556"."out.c-pricing_ml"."secondary_property_types"'
+)
+
+# Slim, last-3-years, fee>0 subset of pricing_fee_model_input (algorithm
+# services 1/2/4) with the rule-aligned levers + awarded fee, built by the same
+# "Fee stats by service and property" transformation. Queried live (filtered +
+# ranked by similarity) to show users real past projects like the one they
+# entered, alongside the two estimates.
+COMPARABLE_PROJECTS_TABLE = '"SAPI_10556"."out.c-pricing_ml"."comparable_projects"'
 
 # The app's primary-property-type labels differ slightly from the historical
 # `primary_property_type` vocabulary; map the few that don't match verbatim.
@@ -731,6 +745,7 @@ def call_ml_api(
     land_area: float,
     facility_type: str,
     secondary_property_type: str,
+    customer_type: str,
     limit_of_liability: float,
     travel_difficulty_level: int | None,
     prior_report: str | None,
@@ -755,6 +770,7 @@ def call_ml_api(
         "land_area": _ml_param(land_area),
         "facility_type": _ml_param(facility_type),
         "secondary_property_type": _ml_param(secondary_property_type),
+        "customer_type": _ml_param(customer_type),
         "limit_of_liability": _ml_param(limit_of_liability),
         "travel_difficulty": _ml_param(travel_difficulty_level),
         "prior_report": _ml_param(prior_report),
@@ -830,6 +846,159 @@ def load_fee_stats() -> tuple[pd.DataFrame, pd.DataFrame]:
             if col in frame.columns:
                 frame[col] = pd.to_numeric(frame[col], errors="coerce")
     return by_service, by_property
+
+
+@st.cache_data(ttl=600)
+def load_secondary_property_types() -> pd.DataFrame:
+    """Load distinct secondary property types (per service x primary property
+    type, count >= 10, last 3 years) used to populate the Secondary property
+    type dropdown. primary/secondary are a hierarchy, so the dropdown is
+    filtered by the selected primary property type."""
+    df = query_data(
+        'SELECT "order_form_service_id", "primary_property_type", '
+        '"secondary_property_type", "n" '
+        f"FROM {SECONDARY_PROPERTY_TYPES_TABLE}"
+    )
+    df["order_form_service_id"] = pd.to_numeric(
+        df["order_form_service_id"], errors="coerce"
+    ).astype("Int64")
+    df["n"] = pd.to_numeric(df["n"], errors="coerce")
+    df["primary_property_type"] = df["primary_property_type"].astype(str).str.strip()
+    df["secondary_property_type"] = df["secondary_property_type"].astype(str).str.strip()
+    return df
+
+
+def secondary_type_options(
+    df: pd.DataFrame | None, service_id: int, primary_type: str | None = None
+) -> list[str]:
+    """Distinct secondary property types for a service, narrowed to the selected
+    primary property type (primary -> secondary is a hierarchy), most common
+    first. Falls back to the service-wide list if there's no per-primary history,
+    and always offers 'Vacant Land' (the rule engine has a Size special case)."""
+    opts: list[str] = []
+    if df is not None and not df.empty:
+        scoped = df[df["order_form_service_id"] == service_id]
+        if primary_type:
+            hist_primary = APP_TO_HIST_PROPERTY.get(primary_type, primary_type)
+            by_primary = scoped[scoped["primary_property_type"] == hist_primary]
+            # Prefer the per-primary list; only fall back to service-wide if this
+            # primary has no recorded sub-types.
+            source = by_primary if not by_primary.empty else scoped
+        else:
+            source = scoped
+        if source.empty:
+            source = df
+        ordered = (
+            source.groupby("secondary_property_type", as_index=False)["n"]
+            .sum()
+            .sort_values("n", ascending=False)
+        )
+        opts = [t for t in ordered["secondary_property_type"].tolist() if t]
+    if "Vacant Land" not in opts:
+        opts.append("Vacant Land")
+    return opts
+
+
+@st.cache_data(ttl=600)
+def load_customer_types() -> pd.DataFrame:
+    """Distinct client/customer-type buckets (per service, last 3 years) used to
+    populate the Client type dropdown. This is the same `customer_type` field the
+    ML model now trains on, so the options match the model's vocabulary."""
+    df = query_data(
+        'SELECT "order_form_service_id", "customer_type", COUNT(*) AS "n" '
+        f"FROM {COMPARABLE_PROJECTS_TABLE} "
+        "WHERE \"customer_type\" IS NOT NULL AND TRIM(\"customer_type\") <> '' "
+        "GROUP BY 1, 2"
+    )
+    df["order_form_service_id"] = pd.to_numeric(
+        df["order_form_service_id"], errors="coerce"
+    ).astype("Int64")
+    df["n"] = pd.to_numeric(df["n"], errors="coerce")
+    df["customer_type"] = df["customer_type"].astype(str).str.strip()
+    return df
+
+
+def customer_type_options(df: pd.DataFrame | None, service_id: int) -> list[str]:
+    """Client-type buckets for a service, most common first."""
+    if df is None or df.empty:
+        return []
+    scoped = df[df["order_form_service_id"] == service_id]
+    if scoped.empty:
+        scoped = df
+    ordered = (
+        scoped.groupby("customer_type", as_index=False)["n"]
+        .sum()
+        .sort_values("n", ascending=False)
+    )
+    return [t for t in ordered["customer_type"].tolist() if t]
+
+
+def _sql_quote(value: str) -> str:
+    """Escape single quotes for safe inlining in a SQL string literal."""
+    return str(value).replace("'", "''")
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_comparables(
+    service_id: int,
+    primary_type: str,
+    *,
+    secondary_type: str = "",
+    building_area: float = 0.0,
+    land_area: float = 0.0,
+    uses_building_sf: bool = True,
+    min_margin: float | None = None,
+    limit: int = 6,
+) -> pd.DataFrame:
+    """Return the past projects most similar to the user's inputs: same service
+    and primary property type, ranked by closeness on the size dimension the
+    service prices on (building SF for PCA, land acres for ESA), preferring an
+    exact secondary-type match. Falls back to most-recent when no size is given.
+    Each row carries its real awarded fee so users can sanity-check the estimates
+    against comparable history. When min_margin is set (0-1 fraction), only past
+    projects whose service gross margin exceeds it are returned."""
+    hist_primary = APP_TO_HIST_PROPERTY.get(primary_type, primary_type)
+    where = [
+        f'"order_form_service_id" = {int(service_id)}',
+        f"\"primary_property_type\" = '{_sql_quote(hist_primary)}'",
+    ]
+    if min_margin is not None:
+        where.append(f'TRY_TO_DOUBLE("service_margin") > {float(min_margin)}')
+    size_col = "building_area" if uses_building_sf else "land_acreage"
+    target = building_area if uses_building_sf else land_area
+
+    order_clauses: list[str] = []
+    if secondary_type:
+        order_clauses.append(
+            "CASE WHEN \"secondary_property_type\" = "
+            f"'{_sql_quote(secondary_type)}' THEN 0 ELSE 1 END"
+        )
+    if target and target > 0:
+        # Storage columns come back as strings; cast before the distance math and
+        # push rows with no recorded size to the bottom.
+        order_clauses.append(
+            f'ABS(TRY_TO_DOUBLE("{size_col}") - {float(target)}) ASC NULLS LAST'
+        )
+    else:
+        order_clauses.append('"created_month_label" DESC')
+    order_by = ", ".join(order_clauses)
+
+    sql = (
+        'SELECT "secondary_property_type", "building_area", "land_acreage", '
+        '"year_built", "turn_around_time", "number_of_buildings", "number_of_stories", '
+        '"prior_report", "site_complexity", "limit_of_liability_tier", '
+        '"city", "state", "country", "customer_type", "client_type", '
+        '"client_name", "company_name", "fee", "service_margin", "created_month_label" '
+        f"FROM {COMPARABLE_PROJECTS_TABLE} "
+        f"WHERE {' AND '.join(where)} "
+        f"ORDER BY {order_by} "
+        f"LIMIT {int(limit)}"
+    )
+    df = query_data(sql)
+    for col in ("building_area", "land_acreage", "year_built", "number_of_buildings", "number_of_stories", "fee", "service_margin"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
 
 
 def fee_hint_caption(
@@ -919,6 +1088,18 @@ try:
     fee_stats_by_service, fee_stats_by_property = load_fee_stats()
 except Exception:
     fee_stats_by_service, fee_stats_by_property = None, None
+
+# Distinct secondary property types for the dropdown (best-effort).
+try:
+    secondary_types_df = load_secondary_property_types()
+except Exception:
+    secondary_types_df = None
+
+# Distinct client/customer types for the dropdown (best-effort).
+try:
+    customer_types_df = load_customer_types()
+except Exception:
+    customer_types_df = None
 
 
 # Stage 1: Service + Primary Property Type (these drive which inputs are shown below)
@@ -1067,12 +1248,34 @@ with col1:
             f"OrderFormService.base_price). Override as needed."
         ),
     )
-    tat_in = st.number_input("Turnaround (days)", min_value=0, value=5, step=1)
-    secondary_in = st.text_input(
-        "Secondary property type",
-        value="",
-        help="Free text. Use 'Vacant Land' to trigger the Size special case.",
+    tat_in = st.number_input("Turnaround (days)", min_value=0, value=10, step=1)
+    _secondary_opts = secondary_type_options(
+        secondary_types_df, selected_service_id, facility_type_in
     )
+    secondary_choice = st.selectbox(
+        "Secondary property type",
+        ["— Any / not specified —"] + _secondary_opts,
+        index=0,
+        key=f"secondary_{selected_service_id}_{facility_type_in}",
+        help=(
+            f"Sub-types seen historically for {facility_type_in} on this service "
+            "(most common first). 'Vacant Land' triggers the Size special case."
+        ),
+    )
+    secondary_in = "" if secondary_choice.startswith("—") else secondary_choice
+    _customer_opts = customer_type_options(customer_types_df, selected_service_id)
+    customer_choice = st.selectbox(
+        "Client type",
+        ["— Any / not specified —"] + _customer_opts,
+        index=0,
+        key=f"client_type_{selected_service_id}",
+        help=(
+            "Client/customer segment (e.g. 'Lender - CMBS', 'Developer'). The ML "
+            "model learned fee patterns by client type, so this shifts the ML "
+            "prediction. The rule-based engine ignores it."
+        ),
+    )
+    customer_type_in = "" if customer_choice.startswith("—") else customer_choice
     country_in = st.selectbox(
         "Country / region",
         ["", "US", "CA"],
@@ -1191,6 +1394,15 @@ with col3:
         na_field("Percent units to inspect (%)", "only Multi-Family / Seniors Housing")
 
 
+high_margin_only = st.checkbox(
+    "Comparables: only show high-margin past projects (> 42%)",
+    value=False,
+    help=(
+        "Filters the Comparable past projects table below to jobs whose service "
+        "gross margin exceeded 42%. Toggle, then re-run Calculate to apply."
+    ),
+)
+
 go = st.button("Calculate pricing", type="primary", use_container_width=True)
 if not go:
     st.stop()
@@ -1234,6 +1446,7 @@ if ml_enabled:
                 land_area=land_area_in,
                 facility_type=facility_type_in,
                 secondary_property_type=secondary_in,
+                customer_type=customer_type_in,
                 limit_of_liability=limit_of_liability_in,
                 travel_difficulty_level=travel_level,
                 prior_report=prior_in,
@@ -1324,18 +1537,21 @@ if ml_enabled:
                 ),
             )
 
-        ml_low = ml_payload.get("predicted_low")
-        ml_high = ml_payload.get("predicted_high")
+        ml_block = ml_payload.get("ml") or {}
+        ml_low = ml_block.get("predicted_low")
+        ml_high = ml_block.get("predicted_high")
         if ml_high:
-            st.info(
-                f"**Likely range: ${ml_low:,.0f} – ${ml_high:,.0f}**  "
-                f"(50th–85th percentile of comparable past projects)"
-            )
-            st.caption(
-                "The predicted fee above is the *most-likely* number. Fees are "
-                "right-skewed, so premium, complex, or busy-period jobs land toward "
-                "the top of this range — use the upper bound as a high estimate."
-            )
+            with st.container(border=True):
+                st.metric(
+                    "Likely fee range",
+                    f"${ml_low:,.0f} – ${ml_high:,.0f}",
+                    help="50th–85th percentile of comparable past projects.",
+                )
+                st.caption(
+                    "The predicted fee above is the *most-likely* number. Fees are "
+                    "right-skewed, so premium, complex, or busy-period jobs land toward "
+                    "the top of this range — use the upper bound as a high estimate."
+                )
     elif ml_error:
         st.error(f"ML model unavailable: {ml_error}")
         st.caption(
@@ -1346,6 +1562,117 @@ if ml_enabled:
         st.info("ML model returned no payload.")
 else:
     st.caption("ML model call is disabled in the sidebar.")
+
+
+# Comparable past projects — real historical jobs most similar to these inputs,
+# with their actual awarded fees, so the two estimates above can be sanity-checked
+# against reality.
+st.markdown("---")
+st.markdown("### Comparable past projects")
+try:
+    comps = load_comparables(
+        selected_service_id,
+        facility_type_in,
+        secondary_type=secondary_in,
+        building_area=float(building_area_in or 0),
+        land_area=float(land_area_in or 0),
+        uses_building_sf=bool(service_uses_building_sf),
+        min_margin=0.42 if high_margin_only else None,
+        limit=6,
+    )
+except Exception as exc:
+    comps = None
+    st.caption(f"Comparable projects unavailable: {exc}")
+
+if comps is not None and not comps.empty:
+    median_comp_fee = float(comps["fee"].median())
+    st.caption(
+        f"Real {service_label} / {facility_type_in} projects from the last 3 years, "
+        "ranked by how close they are to your inputs"
+        + (" (matching sub-type first)" if secondary_in else "")
+        + (" · margin > 42% only" if high_margin_only else "")
+        + ". These are actual awarded fees — a reality check on the estimates above."
+    )
+
+    cc1, cc2 = st.columns(2)
+    cc1.metric("Median fee of these comparables", f"${median_comp_fee:,.0f}")
+    if isinstance(result["total_fee"], (int, float)):
+        diff = float(result["total_fee"]) - median_comp_fee
+        cc2.metric(
+            "Rule-based vs. comparables",
+            f"${diff:+,.0f}",
+            delta=f"{(diff / median_comp_fee * 100.0):+.0f}%" if median_comp_fee else None,
+            delta_color="off",
+            help="How the rule-based total compares to the median of these similar past jobs.",
+        )
+
+    def _fmt_size(row: pd.Series) -> str:
+        if service_uses_building_sf:
+            v = row.get("building_area")
+            return f"{v:,.0f} SF" if pd.notna(v) and v else "—"
+        v = row.get("land_acreage")
+        return f"{v:,.2f} ac" if pd.notna(v) and v else "—"
+
+    def _fmt_text(series: pd.Series) -> pd.Series:
+        return series.fillna("").astype(str).str.strip().replace("", "—")
+
+    def _fmt_location(row: pd.Series) -> str:
+        parts = [
+            str(row.get("city") or "").strip(),
+            str(row.get("state") or "").strip(),
+        ]
+        loc = ", ".join(p for p in parts if p)
+        return loc or (str(row.get("country") or "").strip() or "—")
+
+    def _fmt_client(row: pd.Series) -> str:
+        # Prefer the specific client name, fall back to billing company name.
+        for key in ("client_name", "company_name"):
+            v = str(row.get(key) or "").strip()
+            if v:
+                return v
+        return "—"
+
+    disp = pd.DataFrame(
+        {
+            "When": comps["created_month_label"],
+            "Client": comps.apply(_fmt_client, axis=1),
+            "Client type": _fmt_text(
+                comps["customer_type"].where(
+                    comps["customer_type"].fillna("").str.strip() != "",
+                    comps["client_type"],
+                )
+            ),
+            "Location": comps.apply(_fmt_location, axis=1),
+            "Sub-type": _fmt_text(comps["secondary_property_type"]),
+            "Size": comps.apply(_fmt_size, axis=1),
+            "Year built": comps["year_built"].map(
+                lambda v: f"{v:,.0f}" if pd.notna(v) and v else "—"
+            ),
+            "Turnaround": _fmt_text(comps["turn_around_time"]),
+            "Limit of liability": _fmt_text(comps["limit_of_liability_tier"]),
+            "Buildings": comps["number_of_buildings"].map(
+                lambda v: f"{v:,.0f}" if pd.notna(v) and v else "—"
+            ),
+            "Awarded fee": comps["fee"].map(
+                lambda v: f"${v:,.0f}" if pd.notna(v) else "—"
+            ),
+            "Margin": comps["service_margin"].map(
+                lambda v: f"{v * 100:.0f}%" if pd.notna(v) else "—"
+            ),
+        }
+    )
+    st.dataframe(disp, width="stretch", hide_index=True)
+    st.caption(
+        "Comparables are ranked by service, property type and size. Client, "
+        "location, building age, limit of liability and service gross margin are "
+        "shown for context — scope details (deliverables, special conditions) "
+        "still vary job to job. Margin is the gross margin earned on that service."
+    )
+else:
+    st.caption(
+        "No comparable past projects found for this service and property type "
+        "(this service may not have enough recent history)."
+    )
 
 
 st.markdown("### Fee breakdown (rule-based)")
@@ -1401,6 +1728,7 @@ with st.expander("Input snapshot"):
                 "tat": int(tat_in),
                 "primary_property_type": facility_type_in,
                 "secondary_property_type": secondary_in,
+                "customer_type": customer_type_in,
                 "country_code": country_in,
                 "building_area": building_area_in,
                 "land_area": land_area_in,
