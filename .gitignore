@@ -13,3 +13,6 @@ venv/
 machine_learning/pricepilot_model.pkl
 machine_learning/training_data.csv
 machine_learning/training_metrics.json
+
+# Generated Streamlit deploy bundle — rebuilt by _build_deploy_source.py
+pricing_rules_calculator/_deploy_source.py
