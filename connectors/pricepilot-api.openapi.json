@@ -323,8 +323,15 @@
         },
         "secondary_property_type": {
           "type": "string",
-          "description": "Secondary property type (rare; mostly mixed-use)",
+          "description": "Secondary property type / sub-type (e.g. \"Warehouse/Distribution\", \"Medical Office\", \"Low-Rise Multifamily\", \"Full Service Hotel\"). Optional. The special value \"Vacant Land\" changes the Size pricing tier, so pass it when the site is undeveloped land.",
+          "example": "Vacant Land",
           "x-ms-summary": "Secondary property type"
+        },
+        "client_type": {
+          "type": "string",
+          "description": "Client / customer-type segment (e.g. \"Lender - CMBS\", \"Lender - Bank/Portfolio\", \"Equity - Institutional\", \"Developer\", \"Broker - Mortgage\"). Optional. Feeds the ML model, which learned how fees vary by client type, so it shifts the ML prediction and range. The rule-based estimate ignores it.",
+          "example": "Lender - CMBS",
+          "x-ms-summary": "Client type"
         },
         "is_rfp": {
           "type": "boolean",
@@ -447,7 +454,7 @@
         "predicted_fee": {
           "type": "number",
           "format": "float",
-          "description": "ML prediction rounded to nearest $50",
+          "description": "ML point prediction (most-likely fee) rounded to nearest $50",
           "example": 7750
         },
         "predicted_fee_raw": {
@@ -455,6 +462,38 @@
           "format": "float",
           "description": "Raw ML output before rounding",
           "example": 7705.25
+        },
+        "predicted_low": {
+          "type": "number",
+          "format": "float",
+          "description": "Low end of the likely fee range (50th percentile / median model), rounded to nearest $50. Use with predicted_high to present a range.",
+          "example": 6500
+        },
+        "predicted_high": {
+          "type": "number",
+          "format": "float",
+          "description": "High end of the likely fee range (85th percentile model), rounded to nearest $50. Premium / complex / busy-period jobs land near this bound.",
+          "example": 9200
+        },
+        "predicted_low_raw": {
+          "type": "number",
+          "format": "float",
+          "description": "Raw 50th-percentile output before rounding",
+          "example": 6512.4
+        },
+        "predicted_high_raw": {
+          "type": "number",
+          "format": "float",
+          "description": "Raw 85th-percentile output before rounding",
+          "example": 9183.7
+        },
+        "range_quantiles": {
+          "type": "array",
+          "description": "Quantiles the low/high bounds correspond to (e.g. [0.5, 0.85])",
+          "items": {
+            "type": "number",
+            "format": "float"
+          }
         },
         "predicted_multiplier": {
           "type": "number",
@@ -475,7 +514,20 @@
         },
         "ml_total": {
           "type": "number",
-          "format": "float"
+          "format": "float",
+          "description": "ML point prediction (same as ml.predicted_fee)"
+        },
+        "ml_low": {
+          "type": "number",
+          "format": "float",
+          "description": "Low end of the ML likely range (same as ml.predicted_low)",
+          "example": 6500
+        },
+        "ml_high": {
+          "type": "number",
+          "format": "float",
+          "description": "High end of the ML likely range (same as ml.predicted_high)",
+          "example": 9200
         },
         "delta_abs": {
           "type": "number",

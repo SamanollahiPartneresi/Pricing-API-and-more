@@ -328,6 +328,9 @@ def parse_input_row(params: dict[str, Any]) -> dict[str, Any]:
             "Industrial",
         ),
         "secondary_property_type": _to_str(params.get("secondary_property_type")),
+        # Client/customer-type bucket (e.g. "Lender - CMBS", "Developer"). Maps to
+        # the model's `customer_type` categorical feature. Accept either param name.
+        "customer_type": _to_str(params.get("customer_type") or params.get("client_type")),
         "limit_of_liability": _to_str(params.get("limit_of_liability")),
         "travel_difficulty": _to_str(params.get("travel_difficulty")),
         "prior_report": _to_str(params.get("prior_report")),
@@ -470,6 +473,7 @@ def run_ml(input_row: dict[str, Any], is_rfp: bool) -> dict[str, Any]:
         "prior_report": _to_str(input_row["prior_report"]) or None,
         "site_complexity": _to_str(input_row["site_complexity"]) or None,
         "country": country or None,
+        "customer_type": _to_str(input_row["customer_type"]) or None,
     }
 
     X = pd.DataFrame([raw])
