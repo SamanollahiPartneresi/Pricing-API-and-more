@@ -5,8 +5,8 @@ This folder contains everything needed to rebuild PricePilot's fee-prediction mo
 ## Real-data model (current) — `train_fee_model.py`
 
 Trains on **real historical quotes**, not synthetic data. Source table:
-`pricing_fee_model_input` (Keboola bucket `Data_Science_Pricing_Agent`,
-table id `in.c-Data_Science_Pricing_Agent.pricing_fee_model_input`) —
+`pricing_fee_model_input` (Keboola bucket `pricing-data-transformation`,
+table id `in.c-pricing-data-transformation.pricing_fee_model_input`) —
 ~141k cleaned/winsorized rows across Phase I ESA, Equity PCA, and Debt PCA.
 
 - **Target:** `log_fee` (natural log of the awarded scope fee); predictions
