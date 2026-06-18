@@ -14,8 +14,8 @@ POST /quote  (JSON body with the same fields)
 Both endpoints run BOTH engines on each request:
     * rule-based: SL_Heaven `Pricing.main_algo` port (see `pricing_engine.py`),
       evaluated against the live `pricing_factors` table in Keboola Storage.
-    * ML: scikit-learn model trained by `pricing_model_training_transformation`
-      and loaded from a Keboola Storage file tagged `pricepilot_model`.
+    * ML: LightGBM fee model trained from real historical quotes
+      and loaded from a Keboola Storage file tagged `pricepilot_fee_model`.
 """
 
 from __future__ import annotations
@@ -96,6 +96,9 @@ COUNTRY_CODE_TO_NAME = {
 PRICING_FACTORS_TABLE_ID = os.environ.get(
     "PRICING_FACTORS_TABLE_ID", "in.c-Pricing_Agent_Input_Data.pricing_factors"
 )
+PRICING_FACTORS_LOCAL_CSV = os.environ.get(
+    "PRICING_FACTORS_LOCAL_CSV", "/data/in/tables/pricing_factors.csv"
+)
 PRICING_FACTORS_TTL_SECONDS = int(os.environ.get("PRICING_FACTORS_TTL_SECONDS", "600"))
 DEFAULT_ORDER_FORM_SERVICE_ID = int(os.environ.get("DEFAULT_ORDER_FORM_SERVICE_ID", "4"))
 
@@ -118,6 +121,7 @@ def prep_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_model():
+    """Legacy synthetic-model loader kept for backward compatibility/debugging."""
     global _MODEL
     if _MODEL is not None:
         return _MODEL
@@ -266,7 +270,8 @@ def load_pricing_factors(force_refresh: bool = False) -> pd.DataFrame:
     for sid in SERVICE_NAMES.keys():
         try:
             frames.append(load_factors_for_service(sid, force_refresh=force_refresh))
-        except Exception:
+        except Exception as exc:
+            app.logger.warning("Failed loading factors for service %s: %s", sid, exc)
             continue
     if not frames:
         return pd.DataFrame(columns=["category", "level", "description", "value", "order_form_service_id"])
@@ -611,6 +616,7 @@ def root():
                 "GET /?api=true&...": "rule-based + ML quote via query string",
                 "POST /quote": "rule-based + ML quote via JSON body",
                 "GET /health": "liveness check",
+                "GET /ready": "readiness check (factors + ML availability)",
                 "GET /services": "list of services with default base fees",
                 "GET /pricing-factors?service_id=4": "factor rules for a service",
             },
@@ -646,6 +652,37 @@ def health():
     return jsonify({"status": "ok", "service": "pricepilot-api"})
 
 
+@app.route("/ready", methods=["GET"])
+def ready():
+    """Readiness check: verify factors load and report ML model availability."""
+    checks: Dict[str, Any] = {}
+    try:
+        factors = load_factors_for_service(DEFAULT_ORDER_FORM_SERVICE_ID)
+        checks["pricing_factors"] = {
+            "ok": True,
+            "service_id": DEFAULT_ORDER_FORM_SERVICE_ID,
+            "row_count": int(len(factors)),
+            "table_id": PRICING_FACTORS_TABLE_ID,
+        }
+    except Exception as exc:
+        checks["pricing_factors"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    try:
+        bundle = load_fee_model()
+        checks["fee_model"] = {
+            "ok": bundle is not None,
+            "tag": FEE_MODEL_TAG,
+            "loaded": bundle is not None,
+            "features_count": len(bundle.get("features", [])) if bundle else 0,
+        }
+    except Exception as exc:
+        checks["fee_model"] = {"ok": False, "tag": FEE_MODEL_TAG, "error": f"{type(exc).__name__}: {exc}"}
+
+    ready_ok = checks.get("pricing_factors", {}).get("ok", False)
+    status_code = 200 if ready_ok else 503
+    return jsonify({"ready": ready_ok, "checks": checks}), status_code
+
+
 @app.route("/services", methods=["GET"])
 def services():
     """List the services with default base fees and factor counts (handy for
@@ -668,90 +705,34 @@ def services():
 
 @app.route("/debug/ml-info", methods=["GET"])
 def debug_ml_info():
-    """Return introspection on the loaded joblib model: type, feature names,
-    expected n_features, pipeline steps if any. Helps diagnose why the model
-    predicts near-constant values regardless of inputs."""
+    """Return introspection on the live fee-model bundle used by /quote."""
     import traceback
 
     try:
         try:
-            model = load_model()
+            bundle = load_fee_model()
         except Exception as exc:
-            return jsonify({"error": f"load_model failed: {type(exc).__name__}: {exc}"}), 500
-        if model is None:
-            return jsonify({"error": "Model failed to load (no token or no tagged file)."}), 500
+            return jsonify({"error": f"load_fee_model failed: {type(exc).__name__}: {exc}"}), 500
+        if bundle is None:
+            return jsonify(
+                {"error": f"Fee model bundle failed to load (check token and `{FEE_MODEL_TAG}` tag)."}
+            ), 500
 
+        model = bundle.get("model")
+        quantile_models = bundle.get("quantile_models") or {}
         info: Dict[str, Any] = {
-            "model_class": type(model).__name__,
-            "model_module": type(model).__module__,
-            "is_pipeline": False,
-            "top_level_attrs": [a for a in dir(model) if not a.startswith("_")][:50],
+            "fee_model_tag": FEE_MODEL_TAG,
+            "bundle_keys": sorted(list(bundle.keys())),
+            "model_class": type(model).__name__ if model is not None else None,
+            "model_module": type(model).__module__ if model is not None else None,
+            "features_count": len(bundle.get("features", [])),
+            "features_sample": list(bundle.get("features", []))[:30],
+            "numeric_features_count": len(bundle.get("numeric_features", [])),
+            "categorical_features_count": len(bundle.get("categorical_features", [])),
+            "missing_category": bundle.get("missing_category"),
+            "quantiles": bundle.get("quantiles", []),
+            "quantile_models": sorted(list(quantile_models.keys())),
         }
-
-        try:
-            fni = getattr(model, "feature_names_in_", None)
-            if fni is not None:
-                info["feature_names_in"] = [str(x) for x in fni]
-        except Exception as exc:
-            info["feature_names_in_error"] = f"{type(exc).__name__}: {exc}"
-
-        try:
-            n = getattr(model, "n_features_in_", None)
-            if n is not None:
-                info["n_features_in"] = int(n)
-        except Exception as exc:
-            info["n_features_in_error"] = f"{type(exc).__name__}: {exc}"
-
-        if hasattr(model, "steps"):
-            info["is_pipeline"] = True
-            info["pipeline_steps"] = []
-            for name, step in model.steps:
-                step_info: Dict[str, Any] = {
-                    "name": str(name),
-                    "class": type(step).__name__,
-                    "module": type(step).__module__,
-                }
-                try:
-                    fni = getattr(step, "feature_names_in_", None)
-                    if fni is not None:
-                        step_info["feature_names_in"] = [str(x) for x in fni]
-                except Exception as exc:
-                    step_info["feature_names_in_error"] = f"{type(exc).__name__}: {exc}"
-                try:
-                    if hasattr(step, "get_feature_names_out"):
-                        out = step.get_feature_names_out()
-                        step_info["feature_names_out_count"] = int(len(out))
-                        step_info["feature_names_out_sample"] = [str(x) for x in list(out)[:30]]
-                except Exception as exc:
-                    step_info["feature_names_out_error"] = f"{type(exc).__name__}: {exc}"
-                try:
-                    cats = getattr(step, "categories_", None)
-                    if cats is not None:
-                        step_info["categories_per_column"] = [
-                            [str(x) for x in list(c)[:20]] for c in cats
-                        ]
-                except Exception as exc:
-                    step_info["categories_error"] = f"{type(exc).__name__}: {exc}"
-                try:
-                    n = getattr(step, "n_features_in_", None)
-                    if n is not None:
-                        step_info["n_features_in"] = int(n)
-                except Exception:
-                    pass
-                try:
-                    fi = getattr(step, "feature_importances_", None)
-                    if fi is not None:
-                        step_info["feature_importances"] = [round(float(x), 5) for x in fi]
-                except Exception as exc:
-                    step_info["feature_importances_error"] = f"{type(exc).__name__}: {exc}"
-                info["pipeline_steps"].append(step_info)
-
-        try:
-            fi = getattr(model, "feature_importances_", None)
-            if fi is not None and "feature_importances" not in info:
-                info["feature_importances"] = [round(float(x), 5) for x in fi]
-        except Exception as exc:
-            info["feature_importances_error"] = f"{type(exc).__name__}: {exc}"
 
         return jsonify(info)
     except Exception as exc:

@@ -39,7 +39,7 @@ The system spans a data layer (Keboola), a compute/API layer (Flask), an integra
 | Integration | Custom Connector | Power Platform / OpenAPI 2.0 | Exposes 3 API actions to the agent |
 | Compute | Pricing API | Python 3 + Flask | Combines both methods into one response |
 | Logic | Rule engine | `pricing_engine.py` (pandas) | Port of `Pricing.main_algo` |
-| Logic | ML model | scikit-learn `GradientBoostingRegressor` | Loaded from `pricepilot_model.pkl` |
+| Logic | ML model | LightGBM fee model | Loaded from the `pricepilot_fee_model` bundle |
 | Data | Pricing factors | Keboola Storage table | Production coefficients (~257 rows) |
 | Hosting | Keboola Data Apps | python-js (API) + streamlit (UI) | Git-backed, auto-suspend |
 
@@ -73,10 +73,10 @@ The engine is shared by both the API and the Streamlit app, guaranteeing identic
 
 ## 5. Machine-learning model
 
-- **Algorithm:** scikit-learn `Pipeline` → `ColumnTransformer` (`OneHotEncoder(handle_unknown="ignore")` on categoricals, pass-through numerics) → `GradientBoostingRegressor`. Target: `total_fee`.
-- **Features:** numerics (`base_fee`, `tat`, `building_area`, `land_area`, `limit_of_liability`, `portfolio_size`, `number_of_stories`, `number_of_buildings`, `total_units`, `percent_units_to_inspect`) + categoricals (`facility_type`, `secondary_property_type`, `travel_difficulty`, `prior_report`, `site_complexity`, `country_code`).
-- **Training pipeline** (`machine_learning/`): `generate_training_data.py` synthesizes inputs and labels them by running the canonical rule engine; `train_model.py` trains and evaluates (MAE / MAPE / R²) and writes `pricepilot_model.pkl`; `keboola_training_script.py` is a self-contained version for a Keboola Python transformation.
-- **Current limitation:** the model is trained on **synthetic** data generated from the rule engine, so its predictions are indicative, not authoritative. **The rule-based total is the source of record.** Replacing the synthetic set with real historical quotes is the main ML roadmap item.
+- **Algorithm:** LightGBM gradient-boosted trees with native categorical + NaN handling. Target: `log_fee` (natural log of the awarded scope fee); predictions are exponentiated back to dollars.
+- **Training data:** ~141k cleaned/winsorized **real historical quotes** (`pricing_fee_model_input`) across Phase I ESA, Equity PCA, and Debt PCA. Cost/margin, final fee, status, and raw identifiers are excluded as features to prevent leakage.
+- **Training pipeline** (`machine_learning/`): `train_fee_model.py` trains and evaluates (MAE / MAPE / R²) and writes the `pricepilot_fee_model` bundle; `keboola_fee_training_script.py` is a self-contained version for a Keboola Python transformation; `sync_model_artifacts.py` keeps the committed metrics/importance snapshots in sync with Keboola Storage.
+- **Note:** the model gives a data-driven estimate plus a likely range. **The rule-based total remains the source of record**; the ML prediction is a comparison/reality-check alongside it.
 
 ---
 
