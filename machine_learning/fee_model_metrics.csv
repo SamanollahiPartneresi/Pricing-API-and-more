@@ -1,72 +1,72 @@
 scope,metric,value
-baseline_predict_base_fee,mae,733.7268
-baseline_predict_base_fee,mape_pct,33.8257
-baseline_predict_base_fee,median_ape_pct,15.7895
-baseline_predict_base_fee,n,28296.0
-baseline_predict_base_fee,r2_dollars,0.1893
-baseline_predict_base_fee,rmse,1209.847
-baseline_predict_base_fee,within_10pct,32.5876
-baseline_predict_base_fee,within_20pct,59.0543
-baseline_predict_suggested_fee,mae,898.7581
-baseline_predict_suggested_fee,mape_pct,45.7449
-baseline_predict_suggested_fee,median_ape_pct,21.0
-baseline_predict_suggested_fee,n,28296.0
-baseline_predict_suggested_fee,r2_dollars,-5.9868
-baseline_predict_suggested_fee,rmse,3551.803
-baseline_predict_suggested_fee,within_10pct,26.5797
-baseline_predict_suggested_fee,within_20pct,49.1801
-bias,median_pred_over_actual_raw,0.9687
-bias,smearing_factor,1.0372
-bias,sum_pred_over_actual_raw,0.9547
-bias,sum_pred_over_actual_smeared,0.9902
-model_test,mae,529.6705
-model_test,mape_pct,22.9879
-model_test,median_ape_pct,11.3418
-model_test,n,28296.0
-model_test,r2_dollars,0.4755
-model_test,rmse,973.162
-model_test,within_10pct,45.5259
-model_test,within_20pct,72.5262
-model_test_smeared,mae,538.8565
-model_test_smeared,mape_pct,24.2027
-model_test_smeared,median_ape_pct,12.0669
-model_test_smeared,n,28296.0
-model_test_smeared,r2_dollars,0.4863
-model_test_smeared,rmse,963.1273
-model_test_smeared,within_10pct,42.6739
-model_test_smeared,within_20pct,70.9676
-model_train,mae,490.462
-model_train,mape_pct,20.6727
-model_train,median_ape_pct,10.7416
-model_train,n,113180.0
-model_train,r2_dollars,0.5681
-model_train,rmse,888.4401
-model_train,within_10pct,47.4192
-model_train,within_20pct,74.3365
-quantile,mean_p85_over_point,1.277
-quantile,p50_coverage_pct,49.86
-quantile,p85_coverage_pct,84.12
-service_test::Debt PCA,mae,423.1946
-service_test::Debt PCA,mape_pct,17.6355
-service_test::Debt PCA,median_ape_pct,9.3408
-service_test::Debt PCA,n,5267.0
-service_test::Debt PCA,r2_dollars,0.3016
-service_test::Debt PCA,rmse,698.0018
-service_test::Debt PCA,within_10pct,52.6486
-service_test::Debt PCA,within_20pct,77.2736
-service_test::Equity PCA,mae,1054.6988
-service_test::Equity PCA,mape_pct,31.9455
-service_test::Equity PCA,median_ape_pct,17.0795
-service_test::Equity PCA,n,6269.0
-service_test::Equity PCA,r2_dollars,0.3281
-service_test::Equity PCA,rmse,1748.9853
-service_test::Equity PCA,within_10pct,33.3865
-service_test::Equity PCA,within_20pct,55.7505
-service_test::Phase I ESA,mae,366.7473
-service_test::Phase I ESA,mape_pct,21.3194
-service_test::Phase I ESA,median_ape_pct,10.6362
-service_test::Phase I ESA,n,16760.0
-service_test::Phase I ESA,r2_dollars,0.2992
-service_test::Phase I ESA,rmse,549.1853
-service_test::Phase I ESA,within_10pct,47.8282
-service_test::Phase I ESA,within_20pct,77.3091
+baseline_predict_base_fee,mae,745.1718
+baseline_predict_base_fee,mape_pct,34.0789
+baseline_predict_base_fee,median_ape_pct,16.6667
+baseline_predict_base_fee,n,28732.0
+baseline_predict_base_fee,r2_dollars,0.1812
+baseline_predict_base_fee,rmse,1222.6739
+baseline_predict_base_fee,within_10pct,32.1314
+baseline_predict_base_fee,within_20pct,58.3531
+baseline_predict_suggested_fee,mae,902.0804
+baseline_predict_suggested_fee,mape_pct,45.0065
+baseline_predict_suggested_fee,median_ape_pct,21.2121
+baseline_predict_suggested_fee,n,28732.0
+baseline_predict_suggested_fee,r2_dollars,-5.8243
+baseline_predict_suggested_fee,rmse,3529.8595
+baseline_predict_suggested_fee,within_10pct,27.0256
+baseline_predict_suggested_fee,within_20pct,48.7575
+bias,median_pred_over_actual_raw,0.9782
+bias,smearing_factor,1.0316
+bias,sum_pred_over_actual_raw,0.9538
+bias,sum_pred_over_actual_smeared,0.984
+model_test,mae,496.9427
+model_test,mape_pct,20.9996
+model_test,median_ape_pct,9.9392
+model_test,n,28732.0
+model_test,r2_dollars,0.5233
+model_test,rmse,932.9187
+model_test,within_10pct,50.2402
+model_test,within_20pct,75.6369
+model_test_smeared,mae,502.6175
+model_test_smeared,mape_pct,21.9036
+model_test_smeared,median_ape_pct,10.5484
+model_test_smeared,n,28732.0
+model_test_smeared,r2_dollars,0.5346
+model_test_smeared,rmse,921.8195
+model_test_smeared,within_10pct,47.9709
+model_test_smeared,within_20pct,74.8329
+model_train,mae,443.6043
+model_train,mape_pct,18.4089
+model_train,median_ape_pct,9.1844
+model_train,n,114925.0
+model_train,r2_dollars,0.6206
+model_train,rmse,837.3959
+model_train,within_10pct,53.0798
+model_train,within_20pct,78.8105
+quantile,mean_p85_over_point,1.254
+quantile,p50_coverage_pct,49.69
+quantile,p85_coverage_pct,83.01
+service_test::Debt PCA,mae,396.6393
+service_test::Debt PCA,mape_pct,15.4836
+service_test::Debt PCA,median_ape_pct,8.5261
+service_test::Debt PCA,n,5351.0
+service_test::Debt PCA,r2_dollars,0.3912
+service_test::Debt PCA,rmse,661.5222
+service_test::Debt PCA,within_10pct,55.8587
+service_test::Debt PCA,within_20pct,80.4336
+service_test::Equity PCA,mae,1014.0028
+service_test::Equity PCA,mape_pct,30.7387
+service_test::Equity PCA,median_ape_pct,16.1502
+service_test::Equity PCA,n,6369.0
+service_test::Equity PCA,r2_dollars,0.3866
+service_test::Equity PCA,rmse,1687.028
+service_test::Equity PCA,within_10pct,35.7356
+service_test::Equity PCA,within_20pct,57.3559
+service_test::Phase I ESA,mae,334.9139
+service_test::Phase I ESA,mape_pct,19.0885
+service_test::Phase I ESA,median_ape_pct,9.0583
+service_test::Phase I ESA,n,17012.0
+service_test::Phase I ESA,r2_dollars,0.3806
+service_test::Phase I ESA,rmse,516.4981
+service_test::Phase I ESA,within_10pct,53.9031
+service_test::Phase I ESA,within_20pct,80.9723

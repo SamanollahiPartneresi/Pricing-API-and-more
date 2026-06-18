@@ -12,37 +12,37 @@ _Auto-synced from Keboola on 2026-06-17 by `sync_model_artifacts.py`._
 
 | Metric | model_test | baseline_predict_base_fee | baseline_predict_suggested_fee |
 |---|---:|---:|---:|
-| Rows | 28,296 | 28,296 | 28,296 |
-| MAE | $530 | $734 | $899 |
-| RMSE | $973 | $1,210 | $3,552 |
-| Median error | 11.3% | 15.8% | 21.0% |
-| Mean error (MAPE) | 23.0% | 33.8% | 45.7% |
-| Within 10% | 45.5% | 32.6% | 26.6% |
-| Within 20% | 72.5% | 59.1% | 49.2% |
-| R² (dollars) | 0.475 | 0.189 | -5.987 |
+| Rows | 28,732 | 28,732 | 28,732 |
+| MAE | $497 | $745 | $902 |
+| RMSE | $933 | $1,223 | $3,530 |
+| Median error | 9.9% | 16.7% | 21.2% |
+| Mean error (MAPE) | 21.0% | 34.1% | 45.0% |
+| Within 10% | 50.2% | 32.1% | 27.0% |
+| Within 20% | 75.6% | 58.4% | 48.8% |
+| R² (dollars) | 0.523 | 0.181 | -5.824 |
 
 ### Train vs. test (overfit check)
 
 | Metric | model_train | model_test |
 |---|---:|---:|
-| Rows | 113,180 | 28,296 |
-| MAE | $490 | $530 |
-| RMSE | $888 | $973 |
-| Median error | 10.7% | 11.3% |
-| Mean error (MAPE) | 20.7% | 23.0% |
-| Within 10% | 47.4% | 45.5% |
-| Within 20% | 74.3% | 72.5% |
-| R² (dollars) | 0.568 | 0.475 |
+| Rows | 114,925 | 28,732 |
+| MAE | $444 | $497 |
+| RMSE | $837 | $933 |
+| Median error | 9.2% | 9.9% |
+| Mean error (MAPE) | 18.4% | 21.0% |
+| Within 10% | 53.1% | 50.2% |
+| Within 20% | 78.8% | 75.6% |
+| R² (dollars) | 0.621 | 0.523 |
 
 ### Per-service (test set)
 
 | Metric | service_test::Debt PCA | service_test::Equity PCA | service_test::Phase I ESA |
 |---|---:|---:|---:|
-| Rows | 5,267 | 6,269 | 16,760 |
-| MAE | $423 | $1,055 | $367 |
-| RMSE | $698 | $1,749 | $549 |
-| Median error | 9.3% | 17.1% | 10.6% |
-| Mean error (MAPE) | 17.6% | 31.9% | 21.3% |
-| Within 10% | 52.6% | 33.4% | 47.8% |
-| Within 20% | 77.3% | 55.8% | 77.3% |
-| R² (dollars) | 0.302 | 0.328 | 0.299 |
+| Rows | 5,351 | 6,369 | 17,012 |
+| MAE | $397 | $1,014 | $335 |
+| RMSE | $662 | $1,687 | $516 |
+| Median error | 8.5% | 16.2% | 9.1% |
+| Mean error (MAPE) | 15.5% | 30.7% | 19.1% |
+| Within 10% | 55.9% | 35.7% | 53.9% |
+| Within 20% | 80.4% | 57.4% | 81.0% |
+| R² (dollars) | 0.391 | 0.387 | 0.381 |

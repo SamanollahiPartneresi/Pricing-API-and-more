@@ -38,19 +38,25 @@ curl -sS -X POST https://YOUR-APP-URL.hub.keboola.com/quote \
 
 Returns JSON with both `rule_based.total_fee` and `ml.predicted_fee`.
 
+## Request flow (what happens per quote)
+
+1. **Normalize input** in `parse_input_row` (`primary_property_type` and `facility_type` are treated as aliases).
+2. **Run rule-based pricing** via `pricing_engine.calculate()` using live `pricing_factors` from Keboola.
+3. **Run ML pricing** via the real-data LightGBM fee model bundle tagged `pricepilot_fee_model`.
+4. **Assemble response** with `rule_based`, `ml`, `comparison`, and `ml_error` (if ML is unavailable).
+
 ## Train / retrain the ML model
 
-The model is rebuilt by a Keboola Python transformation that reads `pricing_factors`,
-generates synthetic training data from the canonical rule engine, and saves a
-`pricepilot_model.pkl` tagged `pricepilot_model`. See `machine_learning/README.md`.
+The production ML path uses the real-data fee model (`train_fee_model.py`) and
+loads the `pricepilot_fee_model` bundle in `api.py`. See `machine_learning/README.md`
+for current training, metrics, and artifact sync details.
 
-To iterate locally:
+To iterate locally against a CSV export of the training table:
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install pandas numpy scikit-learn joblib
-python machine_learning/generate_training_data.py   # writes training_data.csv
-python machine_learning/train_model.py              # writes pricepilot_model.pkl + training_metrics.json
+pip install lightgbm pandas numpy scikit-learn joblib
+FEE_INPUT_PATH=/path/to/pricing_fee_model_input.csv python machine_learning/train_fee_model.py
 ```
 
 ## Copilot Studio
@@ -65,3 +71,9 @@ pip install -e .
 export KBC_TOKEN=... KBC_URL=https://connection.keboola.com
 python api.py
 ```
+
+Useful health/debug endpoints:
+
+- `GET /health` for liveness
+- `GET /ready` for readiness checks (factors + fee-model availability)
+- `GET /services` for service list/default fees

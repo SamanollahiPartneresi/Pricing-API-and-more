@@ -44,8 +44,10 @@ jobs:
           if [ -n "$(git status --porcelain machine_learning)" ]; then
             git add machine_learning/fee_model_importance.csv \
                     machine_learning/fee_model_metrics.csv \
+                    machine_learning/fee_model_runs.csv \
                     machine_learning/FEATURE_IMPORTANCE.md \
-                    machine_learning/MODEL_METRICS.md
+                    machine_learning/MODEL_METRICS.md \
+                    machine_learning/MODEL_LOG.md
             git commit -m "chore: sync fee-model artifacts from Keboola [skip ci]"
             git push
           else
