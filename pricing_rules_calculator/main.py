@@ -841,6 +841,76 @@ def call_ml_api(
     return response.json()
 
 
+# Client / client-type lookups now live in the Flask API (see api.py:/clients and
+# /client-types) so the same searchable, sorted, cross-filtered logic is reused by
+# every frontend. This UI is a thin client: it calls those endpoints and falls
+# back to a direct warehouse query only if the API is unreachable.
+
+@st.cache_data(ttl=600, show_spinner=False)
+def fetch_clients_api(base_url: str, service_id: int, client_type: str = "") -> list[str]:
+    """Client names for a service via GET /clients. `client_type` restricts to
+    clients who have booked under that type (the 'vice versa' direction)."""
+    params: dict[str, Any] = {"service_id": int(service_id), "limit": 5000}
+    if client_type:
+        params["client_type"] = client_type
+    resp = requests.get(base_url.rstrip("/") + "/clients", params=params, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+    if isinstance(data, dict) and "error" in data:
+        raise RuntimeError(str(data["error"]))
+    return [c["name"] for c in data.get("clients", []) if c.get("name")]
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def fetch_client_types_api(
+    base_url: str, service_id: int, client_name: str = ""
+) -> tuple[list[str], bool]:
+    """Client types for a service via GET /client-types. When `client_name` is
+    set, returns that client's own type(s) (most common first) and whether the
+    type is unique to the client. Returns (types, is_unique_for_client)."""
+    params: dict[str, Any] = {"service_id": int(service_id), "limit": 5000}
+    if client_name:
+        params["client_name"] = client_name
+    resp = requests.get(base_url.rstrip("/") + "/client-types", params=params, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+    if isinstance(data, dict) and "error" in data:
+        raise RuntimeError(str(data["error"]))
+    types = [c["name"] for c in data.get("client_types", []) if c.get("name")]
+    return types, bool(data.get("is_unique_for_client"))
+
+
+def get_client_options(base_url: str, service_id: int, client_type: str = "") -> list[str]:
+    """API-first client names with a direct-query fallback."""
+    try:
+        return fetch_clients_api(base_url, service_id, client_type=client_type)
+    except Exception:
+        try:
+            names = load_client_name_options(service_id)
+            if client_type:
+                cmap = load_client_type_map(service_id)
+                names = [n for n in names if client_type in cmap.get(n, [])]
+            return names
+        except Exception:
+            return []
+
+
+def get_client_type_options(
+    base_url: str, service_id: int, client_name: str = ""
+) -> tuple[list[str], bool]:
+    """API-first client types with a direct-query fallback."""
+    try:
+        return fetch_client_types_api(base_url, service_id, client_name=client_name)
+    except Exception:
+        try:
+            if client_name:
+                types = load_client_type_map(service_id).get(client_name, [])
+                return types, len(types) == 1
+            return sorted(load_customer_type_options(service_id)), False
+        except Exception:
+            return [], False
+
+
 def app_build_label() -> str:
     """Human-readable build identifier shown in the UI.
 
@@ -1015,6 +1085,41 @@ def load_client_name_options(service_id: int) -> list[str]:
     if df.empty:
         return []
     return [t.strip() for t in df["client_name"].astype(str).tolist() if t and t.strip()]
+
+
+@st.cache_data(ttl=900, show_spinner="⏳ Loading client → type map…")
+def load_client_type_map(service_id: int) -> dict[str, list[str]]:
+    """Map each client name -> the client type(s) on record for ONE service
+    (last 3 years), each client's types ordered most-common first.
+
+    Client type is NOT unique per client: most clients map to a single type,
+    but a meaningful minority span several (e.g. a firm that books as both
+    'Lender - CMBS' and 'Developer'). We therefore return every type a client
+    has used so the UI can offer all of them rather than guessing one."""
+    client_expr = (
+        'COALESCE(NULLIF(TRIM("client_name"), \'\'), NULLIF(TRIM("company_name"), \'\'))'
+    )
+    df = query_data(
+        f'SELECT {client_expr} AS "client_name", TRIM("customer_type") AS "customer_type", '
+        'COUNT(*) AS "n" '
+        f"FROM {COMPARABLE_PROJECTS_TABLE} "
+        f"WHERE {client_expr} IS NOT NULL "
+        "AND \"customer_type\" IS NOT NULL AND TRIM(\"customer_type\") <> '' "
+        f'AND "order_form_service_id" = {int(service_id)} '
+        'GROUP BY 1, 2 ORDER BY 1, "n" DESC'
+    )
+    mapping: dict[str, list[str]] = {}
+    if df.empty:
+        return mapping
+    for _, row in df.iterrows():
+        client = str(row["client_name"]).strip()
+        ctype = str(row["customer_type"]).strip()
+        if not client or not ctype:
+            continue
+        types = mapping.setdefault(client, [])
+        if ctype not in types:
+            types.append(ctype)
+    return mapping
 
 
 @st.cache_data(ttl=3600, show_spinner="⏳ Loading model feature importance…")
@@ -1514,37 +1619,80 @@ with col1:
             "outside the configured rush tiers flags the job as RFP."
         ),
     )
-    try:
-        _customer_opts = load_customer_type_options(selected_service_id)
-    except Exception:
-        _customer_opts = []
-    customer_choice = st.selectbox(
-        "Client type",
-        ["— Any / not specified —"] + _customer_opts,
-        index=0,
-        key=f"client_type_{selected_service_id}",
-        help=(
-            "Client/customer segment (e.g. 'Lender - CMBS', 'Developer'). The ML "
-            "model learned fee patterns by client type, so this shifts the ML "
-            "prediction. The rule-based engine ignores it."
-        ),
+    # Client name + Client type are two-way linked (data served by the Flask API,
+    # see fetch_clients_api / fetch_client_types_api):
+    #   • pick a client  -> Client type narrows to that client's own type(s)
+    #                        (one is auto-selected; several are all listed,
+    #                         since client type is NOT unique per client)
+    #   • pick a type     -> Client name narrows to clients of that type
+    # We read the type widget's current value to filter the client list this same
+    # run, and drop any selection the counterpart filter excludes so the widgets
+    # stay consistent without oscillating.
+    _ANY = "— Any / not specified —"
+    _ctype_key = f"client_type_{selected_service_id}"
+    _cname_key = f"client_name_{selected_service_id}"
+
+    _active_type_choice = st.session_state.get(_ctype_key, "")
+    _active_type = (
+        "" if (not _active_type_choice or _active_type_choice.startswith("—"))
+        else _active_type_choice
     )
-    customer_type_in = "" if customer_choice.startswith("—") else customer_choice
-    try:
-        _client_name_opts = load_client_name_options(selected_service_id)
-    except Exception:
-        _client_name_opts = []
+
+    # --- Client name (filtered by the active client type) ---
+    _client_name_opts = get_client_options(
+        ml_api_url, selected_service_id, client_type=_active_type
+    )
+    _client_options = [_ANY] + _client_name_opts
+    if st.session_state.get(_cname_key) not in _client_options:
+        st.session_state.pop(_cname_key, None)
     client_name_choice = st.selectbox(
         "Client name (searchable)",
-        ["— Any / not specified —"] + _client_name_opts,
+        _client_options,
         index=0,
-        key=f"client_name_{selected_service_id}",
+        key=_cname_key,
         help=(
-            "Search and pick a known client. When selected, Comparable past projects "
-            "below only show prior projects for that same client."
+            "Search and pick a known client. Selecting one sets the Client type "
+            "below to that client's type (all of them if they've booked under "
+            "several) and filters Comparable past projects to that same client."
         ),
     )
     client_name_in = "" if client_name_choice.startswith("—") else client_name_choice
+
+    # --- Client type (scoped to the selected client) ---
+    _client_types, _ct_unique = get_client_type_options(
+        ml_api_url, selected_service_id, client_name=client_name_in
+    )
+    if client_name_in and _client_types:
+        _customer_options = _client_types
+        if _ct_unique:
+            _customer_help = (
+                f"{client_name_in} books exclusively as **{_client_types[0]}**, "
+                "so the client type is set automatically."
+            )
+        else:
+            _customer_help = (
+                f"{client_name_in} has booked under {len(_client_types)} client "
+                "types — all are listed (most common first). Pick the one that "
+                "fits this job."
+            )
+    else:
+        _customer_options = [_ANY] + _client_types
+        _customer_help = (
+            "Client/customer segment (e.g. 'Lender - CMBS', 'Developer'). Type to "
+            "search; the list is alphabetical. Selecting one filters the client "
+            "names above. The ML model learned fee patterns by client type, so "
+            "this shifts the ML prediction; the rule-based engine ignores it."
+        )
+    if st.session_state.get(_ctype_key) not in _customer_options:
+        st.session_state.pop(_ctype_key, None)
+    customer_choice = st.selectbox(
+        "Client type",
+        _customer_options,
+        index=0,
+        key=_ctype_key,
+        help=_customer_help,
+    )
+    customer_type_in = "" if customer_choice.startswith("—") else customer_choice
     portfolio_size_in = st.number_input(
         "Portfolio size (# of properties)",
         min_value=0,
