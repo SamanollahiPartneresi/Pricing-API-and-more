@@ -89,6 +89,9 @@ Everything runs inside one Keboola project.
 The `pricing_factors` table id (as used by the **Storage** API, not SQL) is
 `in.c-Pricing_Agent_Input_Data.pricing_factors`.
 
+For **how each table is built** (the Keboola transformations + data lineage), see
+[§3.3](#33-keboola-data-pipeline-transformations--lineage).
+
 **Why a table, not code, drives pricing:** updating a coefficient is a *data*
 change in `pricing_factors` — no code deploy. The rule engine reads it live
 (cached, see below).
@@ -101,6 +104,85 @@ change in `pricing_factors` — no code deploy. The rule engine reads it live
 - Bundle is a dict: `model`, `features`, `numeric_features`,
   `categorical_features`, `missing_category`, `quantile_models` (p50/p85),
   `quantiles`.
+
+### 3.3 Keboola data pipeline (transformations + lineage)
+
+All the warehouse tables above are produced by **three transformations** in the
+Keboola project. **There are no orchestration flows** — the transformations are
+run individually/manually (or scheduled), not chained. This is the part the app
+code does *not* show, so it's documented here in full.
+
+```
+SL_Heaven Service Details UI (manual transcription)
+        │
+        ▼
+[Snowflake] "Seed pricing_factors …" ──► in.c-Pricing_Agent_Input_Data.pricing_factors   (rule engine reads this)
+
+(upstream load — extractor/external, NOT a transformation in this project)
+        │
+        ▼
+in.c-pricing-data-transformation.pricing_fee_model_input  (~141k historical quotes; siblings: pricing_fee_comparables, pricing_fee_training)
+        │
+        ├──► [Snowflake] "Fee stats by service and property" ──► out.c-pricing_ml.fee_stats_service_3yr
+        │                                                        out.c-pricing_ml.fee_stats_service_property_3yr
+        │                                                        out.c-pricing_ml.secondary_property_types
+        │                                                        out.c-pricing_ml.comparable_projects   (client/type lookups read this)
+        │
+        └──► [Python] "pricepilot_fee_model_training" ──► file: pricepilot_fee_model.pkl  (tag: pricepilot_fee_model → API loads)
+                                                          out.c-pricing_ml.fee_model_metrics
+                                                          out.c-pricing_ml.fee_model_importance
+                                                          out.c-pricing_ml.fee_model_runs  (incremental, PK run_id)
+```
+
+**Transformation 1 — `Seed pricing_factors with PROD PCA Equity + ESA + Zoning demo + PCA Debt`**
+- Component / id: `keboola.snowflake-transformation` / `01ksnp4b6qjcgcfpxe45dvrdsq`
+- Input: none. Output: `pricing_factors` → **`in.c-Pricing_Agent_Input_Data.pricing_factors`** (`CREATE OR REPLACE`, full rewrite, non-incremental).
+- It's a single hand-written `SELECT … UNION ALL` of **257 literal rows** transcribed verbatim from the SL_Heaven Service Details Management UI:
+  - service 1 (PCA Equity, PLINK 353): factor_id 1–73
+  - service 2 (ESA, PLINK 301): 74–146
+  - service 3 (Zoning **demo**, 38 rows): 147–184 — placeholder until real Zoning factors exist
+  - service 4 (PCA Debt, PLINK 346): 185–257
+- Columns: `factor_id, category, level, description, value, default_flag, order_form_service_id`.
+- **Why it exists / gotcha:** production factors live as data, and this supersedes the old `*_PRICING_FACTORS_DEFAULTS` code constants that had drifted. Because it's `CREATE OR REPLACE`, **any manual edit to the `pricing_factors` table is wiped the next time this runs** — change pricing by editing this transformation's SQL (or the table, knowing a re-run overwrites it).
+
+**Transformation 2 — `Fee stats by service and property`**
+- Component / id: `keboola.snowflake-transformation` / `01kt4z779zk226f0npsxe39ryq`
+- Input: `in.c-pricing-data-transformation.pricing_fee_model_input`.
+- Four SQL blocks → four outputs in `out.c-pricing_ml`: `fee_stats_service_3yr`,
+  `fee_stats_service_property_3yr`, `secondary_property_types` (count ≥ 10),
+  and **`comparable_projects`** (the table the Streamlit comparables panel **and
+  the `/clients` + `/client-types` lookups** read).
+- Common filters: `fee > 0`, `created_date` within the **last 3 years**, services
+  `353/301/346` only. Maps `service_type_id`/name → `order_form_service_id`
+  (353→1, 301→2, 346→4). **Zoning (3) is absent from these ML tables.**
+- **Why:** precomputes the small/derived tables the UI and lookups need so neither
+  has to scan or aggregate the raw quotes table at request time.
+
+**Transformation 3 — `pricepilot_fee_model_training`**
+- Component / id: `keboola.python-transformation-v2` / `01kt2pa41qm3ehcjprzzrvr00a`
+- Input: `in.c-pricing-data-transformation.pricing_fee_model_input`. Packages:
+  `lightgbm 4.6.0`, `scikit-learn 1.4.2`, `pandas 2.1.4`, `numpy 1.26.4`,
+  `scipy 1.13.1`, `joblib 1.3.2`.
+- Outputs: the **`pricepilot_fee_model.pkl`** file (permanent, tag
+  `pricepilot_fee_model` — this is exactly what `api.py` loads), plus
+  `fee_model_metrics`, `fee_model_importance`, and `fee_model_runs` (incremental,
+  PK `run_id`) in `out.c-pricing_ml`.
+- Trains LightGBM on `log_fee` with the rule-aligned feature set (numeric:
+  `turn_around_time, building_area, land_acreage, total_units, pct_units_inspect,
+  number_of_stories, number_of_buildings, created_month`; categorical:
+  `service_type_id, primary_property_type, secondary_property_type, prior_report,
+  site_complexity, country, customer_type`), 80/20 split stratified by service,
+  Duan smearing correction, and p50/p85 quantile models for the range.
+- **This is the deployed copy of** `machine_learning/keboola_fee_training_script.py`
+  — keep the two in sync.
+
+### 3.4 Raw input bucket (`in.c-pricing-data-transformation`)
+
+The historical-quotes source layer. Tables: `pricing_fee_model_input` (the one
+the trainer + fee-stats read), plus `pricing_fee_comparables` and
+`pricing_fee_training`. **No transformation in this project produces these** —
+they're loaded upstream (an extractor / external load / shared bucket), so their
+genesis lives outside this repo and project's transformation list.
 
 ---
 
@@ -414,12 +496,13 @@ The python-js app's `repo_url` **is this GitHub repo**
 
 | I want to… | Start here |
 |---|---|
-| Change a pricing coefficient / fee tier | **Data only:** edit the `pricing_factors` table in Keboola. No deploy. |
+| Change a pricing coefficient / fee tier | Edit the **`Seed pricing_factors …`** Snowflake transformation's SQL and re-run it (it `CREATE OR REPLACE`s the table, so editing the table directly is overwritten on the next run). No code deploy. See [§3.3](#33-keboola-data-pipeline-transformations--lineage). |
+| Rebuild comparables / fee-stats / secondary types | Re-run the **`Fee stats by service and property`** transformation ([§3.3](#33-keboola-data-pipeline-transformations--lineage)); these feed the comparables panel and the client/type lookups. |
 | Change rule-based math / add a category | `pricing_engine.py` (`calculate` + the relevant `resolve_*`). Mirror any constant in `main.py`. |
 | Add/Change an API endpoint | `api.py` (route + helper), then **both** `connectors/*.openapi.{yaml,json}`. |
 | Add another searchable/cross-filtered dropdown | Copy the [§9](#9-client--client-type-lookups-the-scalable-pattern) pattern: directory loader + `query_*` helper + endpoint in `api.py`; thin `fetch_*`/`get_*` + widget in `main.py`; document in the connector. |
 | Change the UI layout / inputs | `pricing_rules_calculator/main.py`, then rebuild + redeploy ([§11.1](#111-streamlit-deploy-inline-source--query_data-injection)). |
-| Retrain / swap the ML model | `machine_learning/` (`train_fee_model.py` or the Keboola transform); tag the bundle `pricepilot_fee_model`; restart the API. |
+| Retrain / swap the ML model | Re-run the **`pricepilot_fee_model_training`** Keboola transformation (or `machine_learning/train_fee_model.py` locally); it writes the `pricepilot_fee_model`-tagged bundle; restart the API to pick it up. See [§3.3](#33-keboola-data-pipeline-transformations--lineage). |
 | Change service ids / base fees | `pricing_engine.py` **and** `main.py` (+ `ORDER_FORM_TO_SERVICE_TYPE_ID` if ML coverage changes). |
 | Change the agent's behavior | `docs/copilot-instructions.md`. |
 
