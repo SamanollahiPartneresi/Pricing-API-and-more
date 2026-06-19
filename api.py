@@ -278,6 +278,193 @@ def load_pricing_factors(force_refresh: bool = False) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
+# Client directory (client names + client types) via the Keboola Query Service
+#
+# This is the backend home for the searchable / sortable / cross-filtered client
+# and client-type lookups that the Streamlit tool (and Copilot Studio, and any
+# future AWS frontend) consume. The big comparable-projects table is aggregated
+# to a small per-service directory ONCE, cached in memory, then filtered and
+# sorted in process — so dropdowns never re-scan the warehouse per keystroke.
+
+COMPARABLE_PROJECTS_TABLE = os.environ.get(
+    "COMPARABLE_PROJECTS_TABLE",
+    '"SAPI_10556"."out.c-pricing_ml"."comparable_projects"',
+)
+CLIENT_DIRECTORY_TTL_SECONDS = int(os.environ.get("CLIENT_DIRECTORY_TTL_SECONDS", "900"))
+_QUERY_RESULTS_PAGE_SIZE = 1000
+
+_CLIENT_DIRECTORY: Dict[int, pd.DataFrame] = {}
+_CLIENT_DIRECTORY_LOADED_AT: Dict[int, float] = {}
+
+
+def run_sql(query: str) -> pd.DataFrame:
+    """Execute a single SELECT against the project's Keboola workspace via the
+    Query Service and return a DataFrame. Mirrors the Streamlit app's data path
+    so both share the same warehouse access, but uses `requests` to avoid an
+    extra dependency."""
+    branch_id = os.environ.get("BRANCH_ID")
+    workspace_id = os.environ.get("WORKSPACE_ID")
+    token = os.environ.get("KBC_TOKEN")
+    kbc_url = os.environ.get("KBC_URL", "https://connection.keboola.com")
+    if not (branch_id and workspace_id and token and kbc_url):
+        raise RuntimeError(
+            "Missing env vars for SQL access: BRANCH_ID, WORKSPACE_ID, KBC_TOKEN, KBC_URL."
+        )
+
+    query_service_url = kbc_url.replace("connection.", "query.", 1).rstrip("/") + "/api/v1"
+    if token.startswith("Bearer "):
+        headers = {"Authorization": token, "Accept": "application/json"}
+    else:
+        headers = {"X-StorageAPI-Token": token, "Accept": "application/json"}
+
+    submit = requests.post(
+        f"{query_service_url}/branches/{branch_id}/workspaces/{workspace_id}/queries",
+        json={"statements": [query]},
+        headers=headers,
+        timeout=60,
+    )
+    submit.raise_for_status()
+    job_id = submit.json().get("queryJobId")
+    if not job_id:
+        raise RuntimeError("Query Service did not return a job identifier.")
+
+    start_ts = time.monotonic()
+    job_info: Dict[str, Any] = {}
+    while True:
+        status_resp = requests.get(
+            f"{query_service_url}/queries/{job_id}", headers=headers, timeout=30
+        )
+        status_resp.raise_for_status()
+        job_info = status_resp.json()
+        if job_info.get("status") in {"completed", "failed", "canceled"}:
+            break
+        if time.monotonic() - start_ts > 120:
+            raise TimeoutError(f'Timed out waiting for query "{job_id}".')
+        time.sleep(1)
+
+    statements = job_info.get("statements") or []
+    if not statements:
+        raise RuntimeError("Query Service returned no statements for the query.")
+    statement_id = statements[0]["id"]
+
+    columns: list[str] = []
+    all_rows: list[list[Any]] = []
+    offset = 0
+    total_rows = None
+    while True:
+        results_resp = requests.get(
+            f"{query_service_url}/queries/{job_id}/{statement_id}/results",
+            headers=headers,
+            params={"offset": offset, "pageSize": _QUERY_RESULTS_PAGE_SIZE},
+            timeout=60,
+        )
+        results_resp.raise_for_status()
+        results = results_resp.json()
+        if results.get("status") != "completed":
+            raise ValueError(f"Query error: {results.get('message')}")
+        if not columns:
+            columns = [col["name"] for col in results.get("columns", [])]
+            total_rows = results.get("numberOfRows")
+        page_rows = results.get("data", [])
+        if not page_rows:
+            break
+        all_rows.extend(page_rows)
+        offset += len(page_rows)
+        if total_rows is not None and offset >= total_rows:
+            break
+        if total_rows is None and len(page_rows) < _QUERY_RESULTS_PAGE_SIZE:
+            break
+
+    return pd.DataFrame([dict(zip(columns, row)) for row in all_rows])
+
+
+def load_client_directory(service_id: int, *, force_refresh: bool = False) -> pd.DataFrame:
+    """Per-service directory of (client_name, customer_type, n) aggregated from
+    the comparable-projects history, cached for CLIENT_DIRECTORY_TTL_SECONDS.
+    Client type is NOT unique per client, so every (client, type) pair is kept;
+    the lookup helpers decide how to collapse/sort them."""
+    service_id = int(service_id)
+    now = time.time()
+    if (
+        not force_refresh
+        and service_id in _CLIENT_DIRECTORY
+        and (now - _CLIENT_DIRECTORY_LOADED_AT.get(service_id, 0)) < CLIENT_DIRECTORY_TTL_SECONDS
+    ):
+        return _CLIENT_DIRECTORY[service_id]
+
+    client_expr = (
+        'COALESCE(NULLIF(TRIM("client_name"), \'\'), NULLIF(TRIM("company_name"), \'\'))'
+    )
+    query = (
+        f'SELECT {client_expr} AS "client_name", TRIM("customer_type") AS "customer_type", '
+        'COUNT(*) AS "n" '
+        f"FROM {COMPARABLE_PROJECTS_TABLE} "
+        f"WHERE {client_expr} IS NOT NULL "
+        "AND \"customer_type\" IS NOT NULL AND TRIM(\"customer_type\") <> '' "
+        f"AND \"order_form_service_id\" = {service_id} "
+        "GROUP BY 1, 2"
+    )
+    df = run_sql(query)
+    if df.empty:
+        df = pd.DataFrame(columns=["client_name", "customer_type", "n"])
+    else:
+        df["client_name"] = df["client_name"].astype(str).str.strip()
+        df["customer_type"] = df["customer_type"].astype(str).str.strip()
+        df["n"] = pd.to_numeric(df["n"], errors="coerce").fillna(0).astype(int)
+        df = df[(df["client_name"] != "") & (df["customer_type"] != "")]
+
+    _CLIENT_DIRECTORY[service_id] = df
+    _CLIENT_DIRECTORY_LOADED_AT[service_id] = now
+    return df
+
+
+def query_clients(
+    service_id: int, *, search: str = "", client_type: str = "", limit: int = 50
+) -> list[dict[str, Any]]:
+    """Searchable, alphabetically-sorted client names for a service. When
+    `client_type` is given (the 'vice versa' direction), only clients who have
+    booked under that type are returned."""
+    df = load_client_directory(service_id)
+    if df.empty:
+        return []
+    if client_type:
+        df = df[df["customer_type"].str.lower() == client_type.strip().lower()]
+    grouped = df.groupby("client_name", as_index=False)["n"].sum()
+    if search:
+        needle = search.strip().lower()
+        grouped = grouped[grouped["client_name"].str.lower().str.contains(needle, regex=False)]
+    grouped = grouped.sort_values("client_name", key=lambda c: c.str.lower())
+    rows = [{"name": r["client_name"], "n": int(r["n"])} for _, r in grouped.iterrows()]
+    return rows[:limit] if limit and limit > 0 else rows
+
+
+def query_client_types(
+    service_id: int, *, search: str = "", client_name: str = "", limit: int = 50
+) -> tuple[list[dict[str, Any]], bool]:
+    """Searchable client types for a service. When `client_name` is given, the
+    list is scoped to that client's own type(s) — sorted most-common first so the
+    primary type leads — and the second return value reports whether that client
+    maps to a single (unique) type. Without a client, all service types are
+    returned, sorted alphabetically. Returns (rows, is_unique_for_client)."""
+    df = load_client_directory(service_id)
+    if df.empty:
+        return [], False
+    scoped = bool(client_name)
+    if client_name:
+        df = df[df["client_name"].str.lower() == client_name.strip().lower()]
+    grouped = df.groupby("customer_type", as_index=False)["n"].sum()
+    if search:
+        needle = search.strip().lower()
+        grouped = grouped[grouped["customer_type"].str.lower().str.contains(needle, regex=False)]
+    if scoped:
+        grouped = grouped.sort_values("n", ascending=False)
+    else:
+        grouped = grouped.sort_values("customer_type", key=lambda c: c.str.lower())
+    rows = [{"name": r["customer_type"], "n": int(r["n"])} for _, r in grouped.iterrows()]
+    is_unique = scoped and len(rows) == 1
+    return (rows[:limit] if limit and limit > 0 else rows), is_unique
+
+
 # Input parsing
 
 
@@ -619,6 +806,8 @@ def root():
                 "GET /ready": "readiness check (factors + ML availability)",
                 "GET /services": "list of services with default base fees",
                 "GET /pricing-factors?service_id=4": "factor rules for a service",
+                "GET /clients?service_id=4&search=&client_type=": "searchable client names (optionally filtered by client type)",
+                "GET /client-types?service_id=4&search=&client_name=": "searchable client types (scoped to a client when client_name is given)",
             },
             "version": "2.0",
         })
@@ -774,6 +963,58 @@ def debug_files():
     except Exception as exc:
         out["config_error"] = f"{type(exc).__name__}: {exc}"
     return jsonify(out)
+
+
+@app.route("/clients", methods=["GET"])
+def clients_endpoint():
+    """Searchable, sorted client names for a service. Pass `client_type` to
+    restrict to clients who have booked under that type (the reverse of
+    /client-types' client scoping). Powers the client dropdown in any frontend."""
+    try:
+        service_id = int(request.args.get("service_id", DEFAULT_ORDER_FORM_SERVICE_ID))
+        search = _to_str(request.args.get("search"))
+        client_type = _to_str(
+            request.args.get("client_type") or request.args.get("customer_type")
+        )
+        limit = _to_int(request.args.get("limit"), 50)
+        rows = query_clients(service_id, search=search, client_type=client_type, limit=limit)
+        return jsonify({
+            "order_form_service_id": service_id,
+            "service_name": SERVICE_NAMES.get(service_id),
+            "client_type": client_type or None,
+            "search": search or None,
+            "count": len(rows),
+            "clients": rows,
+        })
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+
+
+@app.route("/client-types", methods=["GET"])
+def client_types_endpoint():
+    """Searchable, sorted client types for a service. Pass `client_name` to scope
+    to that client's own type(s): one type means it's set automatically, several
+    means all are returned (most common first) since client type is not unique
+    per client. `is_unique_for_client` reflects that when a client is given."""
+    try:
+        service_id = int(request.args.get("service_id", DEFAULT_ORDER_FORM_SERVICE_ID))
+        search = _to_str(request.args.get("search"))
+        client_name = _to_str(request.args.get("client_name"))
+        limit = _to_int(request.args.get("limit"), 50)
+        rows, is_unique = query_client_types(
+            service_id, search=search, client_name=client_name, limit=limit
+        )
+        return jsonify({
+            "order_form_service_id": service_id,
+            "service_name": SERVICE_NAMES.get(service_id),
+            "client_name": client_name or None,
+            "search": search or None,
+            "is_unique_for_client": is_unique if client_name else None,
+            "count": len(rows),
+            "client_types": rows,
+        })
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
 
 
 @app.route("/pricing-factors", methods=["GET"])

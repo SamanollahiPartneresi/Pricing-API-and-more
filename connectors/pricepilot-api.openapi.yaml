@@ -78,6 +78,101 @@ paths:
           schema:
             $ref: "#/definitions/PricingFactorsResponse"
 
+  /clients:
+    get:
+      operationId: ListClients
+      summary: List client names (searchable, sorted)
+      description: |
+        Returns the known client names for a service, sorted alphabetically.
+        Pass `search` to filter by substring, and `client_type` to restrict to
+        clients who have booked under that client type (the reverse of the
+        client scoping on /client-types). Use this to populate a searchable
+        client dropdown.
+      parameters:
+        - name: service_id
+          in: query
+          description: "Order-form service id. 1 = PCA Equity, 2 = ESA, 3 = Zoning, 4 = PCA Debt."
+          required: true
+          type: integer
+          x-ms-summary: Service ID
+          enum: [1, 2, 3, 4]
+        - name: search
+          in: query
+          description: Case-insensitive substring to filter client names by.
+          required: false
+          type: string
+          x-ms-summary: Search
+        - name: client_type
+          in: query
+          description: Only return clients who have booked under this client type.
+          required: false
+          type: string
+          x-ms-summary: Client type
+        - name: limit
+          in: query
+          description: Maximum number of clients to return (default 50).
+          required: false
+          type: integer
+          default: 50
+          x-ms-summary: Limit
+      responses:
+        "200":
+          description: Client list
+          schema:
+            $ref: "#/definitions/ClientsResponse"
+        "500":
+          description: Lookup failure
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+
+  /client-types:
+    get:
+      operationId: ListClientTypes
+      summary: List client types (searchable, sorted)
+      description: |
+        Returns the client/customer types for a service, sorted alphabetically.
+        Pass `search` to filter by substring. Pass `client_name` to scope the
+        result to that client's own type(s): a single type means it is the
+        client's type (set it automatically), several means all are returned
+        (most common first) because client type is NOT unique per client.
+        `is_unique_for_client` reports this when `client_name` is supplied.
+      parameters:
+        - name: service_id
+          in: query
+          description: "Order-form service id. 1 = PCA Equity, 2 = ESA, 3 = Zoning, 4 = PCA Debt."
+          required: true
+          type: integer
+          x-ms-summary: Service ID
+          enum: [1, 2, 3, 4]
+        - name: search
+          in: query
+          description: Case-insensitive substring to filter client types by.
+          required: false
+          type: string
+          x-ms-summary: Search
+        - name: client_name
+          in: query
+          description: Scope the client types to this client's own history.
+          required: false
+          type: string
+          x-ms-summary: Client name
+        - name: limit
+          in: query
+          description: Maximum number of client types to return (default 50).
+          required: false
+          type: integer
+          default: 50
+          x-ms-summary: Limit
+      responses:
+        "200":
+          description: Client-type list
+          schema:
+            $ref: "#/definitions/ClientTypesResponse"
+        "500":
+          description: Lookup failure
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+
   /quote:
     post:
       operationId: GetQuote
@@ -188,6 +283,69 @@ definitions:
         type: string
         description: Numeric percentage (as string) or the literal "RFP"
         example: "0.20"
+
+  ClientsResponse:
+    type: object
+    properties:
+      order_form_service_id:
+        type: integer
+        example: 4
+      service_name:
+        type: string
+        example: PCA Debt
+      client_type:
+        type: string
+        description: The client_type filter that was applied (null if none)
+      search:
+        type: string
+        description: The search filter that was applied (null if none)
+      count:
+        type: integer
+        example: 50
+      clients:
+        type: array
+        items:
+          $ref: "#/definitions/ClientOption"
+
+  ClientTypesResponse:
+    type: object
+    properties:
+      order_form_service_id:
+        type: integer
+        example: 4
+      service_name:
+        type: string
+        example: PCA Debt
+      client_name:
+        type: string
+        description: The client_name scope that was applied (null if none)
+      search:
+        type: string
+        description: The search filter that was applied (null if none)
+      is_unique_for_client:
+        type: boolean
+        description: |
+          True when client_name was supplied and that client maps to a single
+          client type. Null when no client_name was supplied.
+      count:
+        type: integer
+        example: 12
+      client_types:
+        type: array
+        items:
+          $ref: "#/definitions/ClientOption"
+
+  ClientOption:
+    type: object
+    properties:
+      name:
+        type: string
+        description: Client name or client type
+        example: Lender - CMBS
+      n:
+        type: integer
+        description: Number of historical projects backing this option
+        example: 128
 
   QuoteRequest:
     type: object
