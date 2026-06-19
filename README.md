@@ -1,5 +1,12 @@
 # Pricing API and more
 
+> [!IMPORTANT]
+> **Before making any change, read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) first.**
+> It is the source of truth for how the whole system fits together — components,
+> the Keboola data layer and transformations, deployment, and the reasoning
+> behind each decision — and it has a "where to start for common changes" guide.
+> Keep it up to date when the architecture changes.
+
 ML pricing for Partner Engineering and Science — Keboola Data App + Copilot Studio integration.
 
 **Keboola project:** `skills_metrics` (10556)
