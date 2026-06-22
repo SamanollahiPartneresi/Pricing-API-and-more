@@ -8,10 +8,8 @@ the PricePilot Flask ML API to render both predictions side-by-side.
 
 from __future__ import annotations
 
-import math
 import os
 import time
-from dataclasses import dataclass
 from typing import Any
 
 import httpx

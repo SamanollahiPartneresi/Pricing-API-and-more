@@ -36,10 +36,12 @@ def _engine_body() -> str:
     text = (repo_root / "pricing_engine.py").read_text()
     # Drop the leading module docstring.
     text = re.sub(r'\A\s*""".*?"""\s*', "", text, count=1, flags=re.DOTALL)
-    # Drop the future import (must be the first statement in a module).
-    text = re.sub(
-        r"^from __future__ import annotations\n", "", text, count=1, flags=re.MULTILINE
-    )
+    # Drop ANY `from __future__` import(s): they are only legal as the first
+    # statement of a module, and `main.py` already has one at the top that covers
+    # the whole deployed file. Match regardless of which features are imported
+    # (so editing pricing_engine.py's future line can't smuggle one mid-file).
+    text = re.sub(r"^from __future__ import .*\n", "", text, flags=re.MULTILINE)
+    assert "from __future__" not in text, "stray __future__ import survived inlining"
     return text.strip("\n")
 
 
@@ -56,6 +58,11 @@ banner = (
 # Use a function replacement so backslashes in the engine source (regex
 # patterns like r"\d+") are NOT interpreted as re template escapes.
 _engine_replacement = banner + _engine_body()
+# Sanity-check the inlined body is the real engine, not an empty/truncated strip,
+# so a botched _engine_body() can never yield a green build that breaks only at
+# runtime (this is the safety net ARCHITECTURE.md §11.3 relies on).
+for _needle in ("def calculate(", "def _calc_tat_totals(", "SERVICE_BASE_FEES"):
+    assert _needle in _engine_replacement, f"engine body missing {_needle!r} — inline failed"
 out, n_engine = engine_pattern.subn(lambda _m: _engine_replacement, src)
 assert n_engine == 1, f"expected exactly 1 PRICING_ENGINE block, found {n_engine}"
 
