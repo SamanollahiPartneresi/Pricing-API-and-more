@@ -1631,12 +1631,31 @@ with col1:
     _ANY = "— Any / not specified —"
     _ctype_key = f"client_type_{selected_service_id}"
     _cname_key = f"client_name_{selected_service_id}"
+    _prev_cname_key = f"_prev_client_name_{selected_service_id}"
+
+    # Last-touched wins. If the user just picked a NEW client name, that pick
+    # takes precedence over the previously-selected client's (now stale) type:
+    # otherwise the stale type filter would exclude the new client and the
+    # selection would snap back to "Any". When the client name is unchanged we
+    # keep filtering the client list by the active type, so picking a *type*
+    # still narrows the client list (the other direction of the two-way link).
+    _current_cname = st.session_state.get(_cname_key)
+    _client_just_changed = (
+        _current_cname is not None
+        and not str(_current_cname).startswith("—")
+        and _current_cname != st.session_state.get(_prev_cname_key)
+    )
 
     _active_type_choice = st.session_state.get(_ctype_key, "")
     _active_type = (
         "" if (not _active_type_choice or _active_type_choice.startswith("—"))
         else _active_type_choice
     )
+    if _client_just_changed:
+        # New client wins: don't filter the client list by the old client's type
+        # and clear that type so it re-derives from this client just below.
+        _active_type = ""
+        st.session_state.pop(_ctype_key, None)
 
     # --- Client name (filtered by the active client type) ---
     _client_name_opts = get_client_options(
@@ -1657,6 +1676,9 @@ with col1:
         ),
     )
     client_name_in = "" if client_name_choice.startswith("—") else client_name_choice
+    # Remember what the client-name widget settled on this run so the next run
+    # can detect a user change (the last-touched-wins check above).
+    st.session_state[_prev_cname_key] = client_name_choice
 
     # --- Client type (scoped to the selected client) ---
     _client_types, _ct_unique = get_client_type_options(
