@@ -164,7 +164,7 @@ SERVICE_METRIC_SCOPE = {1: "Equity PCA", 2: "Phase I ESA", 4: "Debt PCA"}
 ML_SUPPORTED_SERVICE_IDS = set(SERVICE_METRIC_SCOPE)
 
 # Human-facing app version. Bump on meaningful UI/logic releases.
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.1"
 
 # Rule-engine logic version (bump when the factor-matching logic changes).
 RULE_ENGINE_VERSION = "1.0.0"
