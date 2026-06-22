@@ -7,7 +7,7 @@ Use it to compare model versions over time (accuracy, feature count, data size).
 - Raw values: [`fee_model_runs.csv`](./fee_model_runs.csv).
 - Metrics are on the 20% hold-out test split; lower error / higher "within X%" and R² is better.
 
-_Auto-synced from Keboola on 2026-06-21 by `sync_model_artifacts.py`._
+_Auto-synced from Keboola on 2026-06-22 by `sync_model_artifacts.py`._
 
 | Run (UTC) | Tag | # feats | Rows (train) | Rows (test) | MAE | RMSE | Median err | Mean err | Within 10% | Within 20% | Test R² | Train R² |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
