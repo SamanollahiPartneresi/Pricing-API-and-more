@@ -1105,8 +1105,15 @@ with col1:
         ml_api_url, selected_service_id, client_type=_active_type
     )
     _client_options = [_ANY] + _client_name_opts
-    if st.session_state.get(_cname_key) not in _client_options:
-        st.session_state.pop(_cname_key, None)
+    # Preserve the user's explicit client even if the type-filtered list (a
+    # separate, possibly-inconsistent query) omits it. The Client type dropdown
+    # only ever offers the selected client's own types, so picking a type never
+    # makes the client invalid — silently dropping it here is what snapped both
+    # widgets back to "Any". Adding it keeps the widget valid (no Streamlit
+    # crash) and keeps the selection.
+    _sel_cname = st.session_state.get(_cname_key)
+    if _sel_cname and not str(_sel_cname).startswith("—") and _sel_cname not in _client_options:
+        _client_options.append(_sel_cname)
     client_name_choice = st.selectbox(
         "Client name (searchable)",
         _client_options,
@@ -1148,8 +1155,12 @@ with col1:
             "names above. The ML model learned fee patterns by client type, so "
             "this shifts the ML prediction; the rule-based engine ignores it."
         )
-    if st.session_state.get(_ctype_key) not in _customer_options:
-        st.session_state.pop(_ctype_key, None)
+    # Preserve the user's explicit type the same way (see Client name above). The
+    # deliberate clear when the client changes is handled earlier (pop _ctype_key),
+    # so a None selection still re-derives from index 0 below.
+    _sel_ctype = st.session_state.get(_ctype_key)
+    if _sel_ctype and not str(_sel_ctype).startswith("—") and _sel_ctype not in _customer_options:
+        _customer_options.append(_sel_ctype)
     customer_choice = st.selectbox(
         "Client type",
         _customer_options,
