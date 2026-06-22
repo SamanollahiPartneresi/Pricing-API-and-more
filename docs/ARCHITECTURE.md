@@ -5,7 +5,7 @@
 > model, and — importantly — **why** each decision was made. If you're coming
 > back to make a change, jump to [§13 "Where to start for common changes"](#13-where-to-start-for-common-changes).
 
-Last updated: 2026-06-19.
+Last updated: 2026-06-22.
 
 ---
 
@@ -51,9 +51,9 @@ There are two front ends and one backend:
 | Path | What lives here |
 |------|-----------------|
 | `api.py` | **Flask REST API.** Deployed as the *python-js* Keboola data app "PricePilot API". Combines rule + ML + warehouse lookups. |
-| `pricing_engine.py` | **Rule-based engine.** Pure-Python/pandas port of `Pricing.main_algo`. Imported by `api.py`. |
-| `pricing_rules_calculator/main.py` | **Streamlit UI.** Deployed as the *streamlit* Keboola data app "Service Pricing Tool". |
-| `pricing_rules_calculator/_build_deploy_source.py` | Build step that turns `main.py` into `_deploy_source.py` for streamlit deploy (see [§11](#11-deployment-model)). |
+| `pricing_engine.py` | **Rule-based engine.** Pure-Python/pandas port of `Pricing.main_algo`. **Single source of truth** — imported by `api.py` and by `main.py` (inlined into the Streamlit deploy artifact at build time). |
+| `pricing_rules_calculator/main.py` | **Streamlit UI.** Deployed as the *streamlit* Keboola data app "Service Pricing Tool". Imports the rule engine from `pricing_engine.py`. |
+| `pricing_rules_calculator/_build_deploy_source.py` | Build step that turns `main.py` into `_deploy_source.py` for streamlit deploy: **inlines `pricing_engine.py`** and injects the `query_data` placeholder (see [§11](#11-deployment-model)). |
 | `pricing_rules_calculator/_deploy_source.py` | **Generated** deploy artifact (git-ignored). Do not edit by hand. |
 | `machine_learning/` | Model trainer, Keboola transformation script, artifact-sync, and committed metric/importance snapshots. |
 | `connectors/` | OpenAPI 2.0 spec (`.yaml` + `.json`) for the Power Platform custom connector + an Adaptive Card + import guide. |
@@ -188,7 +188,7 @@ genesis lives outside this repo and project's transformation list.
 
 ## 4. Service + fee constants (must stay consistent across files)
 
-Defined in both `pricing_engine.py` and `pricing_rules_calculator/main.py`:
+Defined **once** in `pricing_engine.py` (imported by both `api.py` and `main.py`):
 
 | Service id | Name | Default base fee | ML-trained? |
 |---|---|---|---|
@@ -204,11 +204,17 @@ Defined in both `pricing_engine.py` and `pricing_rules_calculator/main.py`:
 - UI default display order: `SERVICE_DISPLAY_ORDER = [4, 1, 2, 3]` (Debt first —
   it's the most common request).
 
-> **Decision — duplicate the constants instead of sharing a module.** The
-> Streamlit app and the API deploy as *separate* Keboola data apps with separate
-> runtimes; keeping the small constant sets local avoids a shared-package
-> dependency at deploy time. The trade-off is they must be kept in sync — change
-> base fees / service ids in **both** `pricing_engine.py` and `main.py`.
+> **Decision — one engine module, inlined at build time (was: hand-duplicated).**
+> The Streamlit app and the API deploy as *separate* Keboola data apps, and the
+> Streamlit app ships as a single inline source file with no repo — so it can't
+> `import pricing_engine` at runtime the way the API does. The engine + constants
+> used to be hand-copied into `main.py`, which risked drift. Now
+> `pricing_engine.py` is the **single source of truth**: `main.py` imports from it
+> (for local dev/test), and the deploy build (`_build_deploy_source.py`) **inlines
+> the engine body** into the artifact (see [§11.1](#111-streamlit-deploy-inline-source--query_data-injection)).
+> The Streamlit copy is *generated*, never hand-maintained, so the two surfaces
+> can't diverge. Change base fees / service ids / rule math in `pricing_engine.py`
+> **only**.
 
 ---
 
@@ -235,8 +241,9 @@ A line-for-line port of the canonical Ruby `Pricing.main_algo`, operating on the
 > **Decision — port the Ruby algorithm exactly rather than re-derive it.** The
 > business already trusts `Pricing.main_algo`; an exact port makes the API a
 > drop-in oracle whose numbers reconcile with the system of record. The same
-> module is imported by the API so every surface returns identical rule-based
-> numbers.
+> module is imported by **both** the API and the Streamlit UI (inlined into the
+> latter's deploy artifact, see [§11.1](#111-streamlit-deploy-inline-source--query_data-injection))
+> so every surface returns identical rule-based numbers.
 
 ---
 
@@ -334,8 +341,12 @@ The API talks to Keboola **two ways**, on purpose:
 
 A browser front end deployed as a Keboola *streamlit* data app.
 
-- Imports the **same** `pricing_engine` logic (vendored into the file) so its
-  rule-based numbers match the API exactly.
+- Imports the rule engine from `pricing_engine.py` — the **same** module the API
+  uses — so its rule-based numbers match the API exactly. Because the Streamlit
+  app is a single inline file with no repo, the build step *inlines*
+  `pricing_engine.py` into the deploy artifact (see
+  [§11.1](#111-streamlit-deploy-inline-source--query_data-injection)); the copy is
+  generated, never hand-maintained.
 - Calls the Flask API for the ML prediction (`call_ml_api`, base URL
   `ML_API_URL` / `ML_API_URL_DEFAULT`).
 - Has its **own** warehouse access via an injected `query_data` function (see
@@ -433,14 +444,28 @@ people up, so read carefully.
 
 ### 11.1 Streamlit deploy (inline source + `query_data` injection)
 
-The streamlit app has **no git repo**; its Python is stored inline in the config.
-Deploy steps:
+The streamlit app has **no git repo**; its Python is stored inline in the config,
+so unlike the API it can't `import pricing_engine` at runtime — the build step
+makes the single-file artifact self-contained. Deploy steps:
 
-1. `python pricing_rules_calculator/_build_deploy_source.py` — replaces the
-   `# ### INJECTED_CODE #### … # ### END_OF_INJECTED_CODE ####` block in `main.py`
-   with the `{QUERY_DATA_FUNCTION}` placeholder and writes `_deploy_source.py`.
+1. `python pricing_rules_calculator/_build_deploy_source.py` — performs **two**
+   substitutions on `main.py` and writes `_deploy_source.py`:
+   - replaces the `# ### PRICING_ENGINE #### … # ### END_PRICING_ENGINE ####`
+     block (which, for local dev, just imports from repo-root `pricing_engine.py`)
+     with the **full inlined body of `pricing_engine.py`**; and
+   - replaces the `# ### INJECTED_CODE #### … # ### END_OF_INJECTED_CODE ####`
+     block with the `{QUERY_DATA_FUNCTION}` placeholder.
+   The script asserts each block is found exactly once and that no
+   `from pricing_engine import` leaks into the artifact.
 2. Push `_deploy_source.py`'s contents as the data app's `source_code` (Keboola
    provides/injects its own `query_data` at the placeholder), then **redeploy**.
+
+> **Decision — inline the engine, don't hand-copy it.** Because the Streamlit app
+> ships as one inline file, the rule engine must physically live in that file.
+> Rather than maintain a hand-copied duplicate of `pricing_engine.py` inside
+> `main.py` (which drifts), `main.py` *imports* the engine for local dev/test and
+> the build step inlines `pricing_engine.py`'s body at deploy time — one source of
+> truth, generated copy. See [§4](#4-service--fee-constants-must-stay-consistent-across-files).
 
 > **Decision — `{QUERY_DATA_FUNCTION}` placeholder.** Keboola injects a
 > platform-managed `query_data` (workspace creds wired in) at deploy time, so the
@@ -465,10 +490,12 @@ The python-js app's `repo_url` **is this GitHub repo**
   data-app tools don't expose secrets, and `update_config` is disallowed for
   `keboola.data-apps`. Caveat: the API app's auto-injected `KBC_TOKEN` must have
   access to that workspace; if not, provision a workspace for the API app.
-- **Streamlit inline size:** the deployable source is ~2,500 lines; pushing it
+- **Streamlit inline size:** `main.py` is ~2,090 lines, but the deployable
+  `_deploy_source.py` is ~2,560 (the rule engine is inlined into it); pushing it
   through tooling is large. Always verify the stored source compiles and contains
   the new code **before** redeploying so a truncated/garbled push can't take the
-  live UI down.
+  live UI down. (`_build_deploy_source.py` already asserts the engine inlined and
+  the `query_data` placeholder are both present.)
 - **Model-artifact CI commits to `main`:** `sync-model-artifacts.yml` pushes
   `[skip ci]` commits, so `git push` may need a `git pull --rebase` first.
 
@@ -498,12 +525,12 @@ The python-js app's `repo_url` **is this GitHub repo**
 |---|---|
 | Change a pricing coefficient / fee tier | Edit the **`Seed pricing_factors …`** Snowflake transformation's SQL and re-run it (it `CREATE OR REPLACE`s the table, so editing the table directly is overwritten on the next run). No code deploy. See [§3.3](#33-keboola-data-pipeline-transformations--lineage). |
 | Rebuild comparables / fee-stats / secondary types | Re-run the **`Fee stats by service and property`** transformation ([§3.3](#33-keboola-data-pipeline-transformations--lineage)); these feed the comparables panel and the client/type lookups. |
-| Change rule-based math / add a category | `pricing_engine.py` (`calculate` + the relevant `resolve_*`). Mirror any constant in `main.py`. |
+| Change rule-based math / add a category | `pricing_engine.py` (`calculate` + the relevant `resolve_*`) — the **only** copy; `main.py` imports it and the build step inlines it. No mirroring. |
 | Add/Change an API endpoint | `api.py` (route + helper), then **both** `connectors/*.openapi.{yaml,json}`. |
 | Add another searchable/cross-filtered dropdown | Copy the [§9](#9-client--client-type-lookups-the-scalable-pattern) pattern: directory loader + `query_*` helper + endpoint in `api.py`; thin `fetch_*`/`get_*` + widget in `main.py`; document in the connector. |
 | Change the UI layout / inputs | `pricing_rules_calculator/main.py`, then rebuild + redeploy ([§11.1](#111-streamlit-deploy-inline-source--query_data-injection)). |
 | Retrain / swap the ML model | Re-run the **`pricepilot_fee_model_training`** Keboola transformation (or `machine_learning/train_fee_model.py` locally); it writes the `pricepilot_fee_model`-tagged bundle; restart the API to pick it up. See [§3.3](#33-keboola-data-pipeline-transformations--lineage). |
-| Change service ids / base fees | `pricing_engine.py` **and** `main.py` (+ `ORDER_FORM_TO_SERVICE_TYPE_ID` if ML coverage changes). |
+| Change service ids / base fees | `pricing_engine.py` **only** (`main.py` imports `SERVICE_NAMES`/`SERVICE_BASE_FEES`); also `ORDER_FORM_TO_SERVICE_TYPE_ID` in `api.py` if ML coverage changes. |
 | Change the agent's behavior | `docs/copilot-instructions.md`. |
 
 ---
@@ -522,5 +549,8 @@ The python-js app's `repo_url` **is this GitHub repo**
 5. **Degrade gracefully.** A missing model, a sleeping app, or an unreachable API
    should never produce a blank page or a fabricated number — fall back, retry,
    or clearly flag `is_rfp` / `ml_error`.
-6. **Keep parallel artifacts in sync.** Constants in two apps, OpenAPI in two
-   formats, model snapshots vs. Keboola tables — change them together.
+6. **One source of truth; generate the copies.** The rule engine + its constants
+   live once in `pricing_engine.py` — `api.py` imports it and the Streamlit build
+   inlines it, so there's no hand-maintained duplicate to drift. Where parallel
+   artifacts are unavoidable (OpenAPI in two formats, model snapshots vs. Keboola
+   tables), change them together.
