@@ -9,7 +9,7 @@ historical-quote table `pricing_fee_model_input`.
 - Source of truth (regenerated on every retrain): Keboola table `out.c-pricing_ml.fee_model_importance`.
 - Raw values: [`fee_model_importance.csv`](./fee_model_importance.csv).
 
-_Auto-synced from Keboola on 2026-06-26 by `sync_model_artifacts.py`._
+_Auto-synced from Keboola on 2026-06-27 by `sync_model_artifacts.py`._
 
 | Rank | Feature | Gain | Share |
 |---:|---|---:|---:|
