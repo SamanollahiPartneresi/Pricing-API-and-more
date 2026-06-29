@@ -164,7 +164,7 @@ SERVICE_METRIC_SCOPE = {1: "Equity PCA", 2: "Phase I ESA", 4: "Debt PCA"}
 ML_SUPPORTED_SERVICE_IDS = set(SERVICE_METRIC_SCOPE)
 
 # Human-facing app version. Bump on meaningful UI/logic releases.
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.3.6"
 
 # Rule-engine logic version (bump when the factor-matching logic changes).
 RULE_ENGINE_VERSION = "1.0.0"
@@ -666,6 +666,7 @@ def load_comparables(
     min_margin: float | None = None,
     match_service: bool = True,
     match_primary_type: bool = True,
+    prefer_primary_match: bool = False,
     limit: int = 6,
 ) -> pd.DataFrame:
     """Return the past projects most similar to the user's inputs: same service
@@ -701,6 +702,13 @@ def load_comparables(
     target = building_area if uses_building_sf else land_area
 
     order_clauses: list[str] = []
+    if prefer_primary_match and not match_primary_type:
+        # Keep the client's own history but float the selected property type to the
+        # top so same-type matches lead, with the rest of their work right behind.
+        order_clauses.append(
+            "CASE WHEN \"primary_property_type\" = "
+            f"'{_sql_quote(hist_primary)}' THEN 0 ELSE 1 END"
+        )
     if secondary_type:
         order_clauses.append(
             "CASE WHEN \"secondary_property_type\" = "
@@ -734,6 +742,28 @@ def load_comparables(
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
+
+
+def load_comparables_resilient(*args: Any, attempts: int = 3, **kwargs: Any):
+    """`load_comparables` wrapper that survives transient Query Service hiccups.
+
+    The data app auto-suspends after 15 min; the first warehouse query after a
+    cold start can time out or get a transient 5xx. Returning an empty/None frame
+    in that case used to silently blank a selected client's history while a later
+    (warm) query succeeded. Retry a few times with a short backoff and only give
+    up (return None) once every attempt has failed, so callers can distinguish a
+    transient failure from a genuinely empty result."""
+    last_exc: Exception | None = None
+    for attempt in range(max(1, attempts)):
+        try:
+            return load_comparables(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001 — transient infra errors, retried below
+            last_exc = exc
+            if attempt + 1 < attempts:
+                time.sleep(0.6 * (attempt + 1))
+    if last_exc is not None:
+        print(f"[comparables] all {attempts} attempts failed: {last_exc}")
+    return None
 
 
 def fee_hint_caption(
@@ -1072,65 +1102,35 @@ with col1:
     # run, and drop any selection the counterpart filter excludes so the widgets
     # stay consistent without oscillating.
     _ANY = "— Any / not specified —"
-    _ctype_key = f"client_type_{selected_service_id}"
+    # Client name + Client type.
+    #
+    # IMPORTANT — why the client list is NOT filtered by the chosen type:
+    # The client dropdown's options must stay STABLE across reruns. Previously the
+    # list was re-filtered by the selected client type, so picking a client (which
+    # auto-set a type) changed the option list on the next rerun, and Streamlit
+    # reset the keyed selectbox back to "Any" — the selection never reached the
+    # comparables logic (confirmed in prod via diagnostics). With a fixed, cached
+    # per-service client list, a keyed selectbox simply keeps the user's choice.
+    # The link is now one-way: pick a client -> the Client type below derives from
+    # that client. (Type no longer narrows the client list.)
     _cname_key = f"client_name_{selected_service_id}"
-    _prev_cname_key = f"_prev_client_name_{selected_service_id}"
+    _ctype_key = f"client_type_{selected_service_id}"
 
-    # Last-touched wins. If the user just picked a NEW client name, that pick
-    # takes precedence over the previously-selected client's (now stale) type:
-    # otherwise the stale type filter would exclude the new client and the
-    # selection would snap back to "Any". When the client name is unchanged we
-    # keep filtering the client list by the active type, so picking a *type*
-    # still narrows the client list (the other direction of the two-way link).
-    _current_cname = st.session_state.get(_cname_key)
-    _client_just_changed = (
-        _current_cname is not None
-        and not str(_current_cname).startswith("—")
-        and _current_cname != st.session_state.get(_prev_cname_key)
-    )
-
-    _active_type_choice = st.session_state.get(_ctype_key, "")
-    _active_type = (
-        "" if (not _active_type_choice or _active_type_choice.startswith("—"))
-        else _active_type_choice
-    )
-    if _client_just_changed:
-        # New client wins: don't filter the client list by the old client's type
-        # and clear that type so it re-derives from this client just below.
-        _active_type = ""
-        st.session_state.pop(_ctype_key, None)
-
-    # --- Client name (filtered by the active client type) ---
-    _client_name_opts = get_client_options(
-        ml_api_url, selected_service_id, client_type=_active_type
-    )
-    _client_options = [_ANY] + _client_name_opts
-    # Preserve the user's explicit client even if the type-filtered list (a
-    # separate, possibly-inconsistent query) omits it. The Client type dropdown
-    # only ever offers the selected client's own types, so picking a type never
-    # makes the client invalid — silently dropping it here is what snapped both
-    # widgets back to "Any". Adding it keeps the widget valid (no Streamlit
-    # crash) and keeps the selection.
-    _sel_cname = st.session_state.get(_cname_key)
-    if _sel_cname and not str(_sel_cname).startswith("—") and _sel_cname not in _client_options:
-        _client_options.append(_sel_cname)
+    # --- Client name (full, stable per-service list) ---
+    _client_options = [_ANY] + get_client_options(ml_api_url, selected_service_id)
     client_name_choice = st.selectbox(
         "Client name (searchable)",
         _client_options,
-        index=0,
         key=_cname_key,
         help=(
-            "Search and pick a known client. Selecting one sets the Client type "
-            "below to that client's type (all of them if they've booked under "
-            "several) and filters Comparable past projects to that same client."
+            "Search and pick a known client. Selecting one filters Comparable past "
+            "projects to that client and sets the Client type below to that "
+            "client's type."
         ),
     )
     client_name_in = "" if client_name_choice.startswith("—") else client_name_choice
-    # Remember what the client-name widget settled on this run so the next run
-    # can detect a user change (the last-touched-wins check above).
-    st.session_state[_prev_cname_key] = client_name_choice
 
-    # --- Client type (scoped to the selected client) ---
+    # --- Client type (derived from the selected client; one-way) ---
     _client_types, _ct_unique = get_client_type_options(
         ml_api_url, selected_service_id, client_name=client_name_in
     )
@@ -1151,20 +1151,18 @@ with col1:
         _customer_options = [_ANY] + _client_types
         _customer_help = (
             "Client/customer segment (e.g. 'Lender - CMBS', 'Developer'). Type to "
-            "search; the list is alphabetical. Selecting one filters the client "
-            "names above. The ML model learned fee patterns by client type, so "
-            "this shifts the ML prediction; the rule-based engine ignores it."
+            "search; the list is alphabetical. The ML model learned fee patterns by "
+            "client type, so this shifts the ML prediction; the rule-based engine "
+            "ignores it."
         )
-    # Preserve the user's explicit type the same way (see Client name above). The
-    # deliberate clear when the client changes is handled earlier (pop _ctype_key),
-    # so a None selection still re-derives from index 0 below.
-    _sel_ctype = st.session_state.get(_ctype_key)
-    if _sel_ctype and not str(_sel_ctype).startswith("—") and _sel_ctype not in _customer_options:
-        _customer_options.append(_sel_ctype)
+    # The type options legitimately change with the selected client, so repair the
+    # widget's stored value to a valid option (prevents a Streamlit reset error)
+    # without touching the — now independent — client widget above.
+    if st.session_state.get(_ctype_key) not in _customer_options:
+        st.session_state[_ctype_key] = _customer_options[0]
     customer_choice = st.selectbox(
         "Client type",
         _customer_options,
-        index=0,
         key=_ctype_key,
         help=_customer_help,
     )
@@ -1828,8 +1826,16 @@ def _render_comps(
     )
 
 
-try:
-    comps = load_comparables(
+if client_name_in:
+    # A client is selected: ALWAYS lead with THAT client's own previous sales so
+    # they show no matter what. First the client's projects on this service (every
+    # property type, with the selected property type ranked first); if they have
+    # none on this service, their projects across ALL services; then other clients'
+    # same service/property-type projects as broader market context. The client's
+    # own projects are intentionally never hidden by the high-margin toggle, and
+    # each lookup is retried so a transient Query Service hiccup (e.g. a cold start
+    # after auto-suspend) can't silently blank the client's history.
+    client_comps = load_comparables_resilient(
         selected_service_id,
         facility_type_in,
         secondary_type=secondary_in,
@@ -1837,74 +1843,17 @@ try:
         building_area=float(building_area_in or 0),
         land_area=float(land_area_in or 0),
         uses_building_sf=bool(service_uses_building_sf),
-        min_margin=0.42 if high_margin_only else None,
+        match_primary_type=False,
+        prefer_primary_match=True,
         limit=COMPARABLES_STATS_LIMIT,
     )
-except Exception as exc:
-    comps = None
-    st.caption(f"Comparable projects unavailable: {exc}")
 
-if comps is not None and not comps.empty:
-    # Best case: we have same-service, same-property-type history (client-filtered
-    # if a client was picked).
-    st.caption(
-        f"Real {service_label} / {facility_type_in} projects from the last 3 years, "
-        "ranked by how close they are to your inputs"
-        + (" (matching secondary property type first)" if secondary_in else "")
-        + (f" · same client: {client_name_in}" if client_name_in else "")
-        + (" · margin > 42% only" if high_margin_only else "")
-        + ". These are actual awarded fees — a reality check on the estimates above."
-    )
-    _render_comps(comps)
-    st.caption(
-        "Comparables are ranked by service, property type and size. "
-        + ("Results are filtered to the selected client name. " if client_name_in else "")
-        + "Client, "
-        "location, building age, limit of liability and service gross margin are "
-        "shown for context — scope details (deliverables, special conditions) "
-        "still vary job to job. Margin is the gross margin earned on that service."
-    )
-
-    # When a client filter is active, also surface comparable projects from OTHER
-    # clients so users still see the broader market, not just this client's history.
-    if client_name_in:
-        try:
-            other_comps = load_comparables(
-                selected_service_id,
-                facility_type_in,
-                secondary_type=secondary_in,
-                exclude_client=client_name_in,
-                building_area=float(building_area_in or 0),
-                land_area=float(land_area_in or 0),
-                uses_building_sf=bool(service_uses_building_sf),
-                min_margin=0.42 if high_margin_only else None,
-                limit=COMPARABLES_STATS_LIMIT,
-            )
-        except Exception:
-            other_comps = None
-        if other_comps is not None and not other_comps.empty:
-            st.markdown(
-                f"**Other comparable {service_label} / {facility_type_in} projects** "
-                "(other clients)"
-            )
-            _render_comps(other_comps)
-            st.caption(
-                "Same service and property type from other clients — broader market "
-                "context beyond this client's own history, ranked by closeness to your "
-                "inputs."
-            )
-elif client_name_in:
-    # Fallback: a client was selected but they have no same-property-type history
-    # on this service. Show two related views instead of an empty result —
-    # (1) the client's other recent projects, and (2) general comparables for the
-    # same service/property type from any client.
-    st.info(
-        f"No {facility_type_in} projects on record for **{client_name_in}** on "
-        f"{service_label}. Showing related history instead."
-    )
-
-    try:
-        client_comps = load_comparables(
+    # Broad fallback: this client's work across EVERY service / property type. Used
+    # whenever the service-scoped lookup is empty (or failed), so the client's past
+    # sales appear even if nothing else matches the current inputs.
+    client_any = None
+    if client_comps is None or client_comps.empty:
+        client_any = load_comparables_resilient(
             selected_service_id,
             facility_type_in,
             client_name=client_name_in,
@@ -1913,60 +1862,139 @@ elif client_name_in:
             match_primary_type=False,
             limit=COMPARABLES_STATS_LIMIT,
         )
-    except Exception:
-        client_comps = None
 
     if client_comps is not None and not client_comps.empty:
-        st.markdown(f"**Other recent projects for {client_name_in}** (any service / property type)")
+        st.caption(
+            f"**{client_name_in}**'s past {service_label} projects from the last 3 "
+            f"years — {facility_type_in} jobs first, then their other {service_label} "
+            "work, ranked by how close they are to your inputs. These are actual "
+            "awarded fees — a reality check on the estimates above."
+        )
+        _render_comps(client_comps, show_property_type=True)
+        st.caption(
+            "Filtered to the selected client. The **Property type** column shows each "
+            "job's type so you can tell same-type matches from this client's broader "
+            "history. Client, location, building age, limit of liability and service "
+            "gross margin are shown for context."
+        )
+
+        # Always surface this client's most recent work across ANY service, so a
+        # recently-active client's latest jobs show even if those were on a
+        # different service than the one selected. Ordered by recency (no size
+        # target), so it complements the similarity-ranked, same-service table above.
+        client_recent_any = load_comparables_resilient(
+            selected_service_id,
+            facility_type_in,
+            client_name=client_name_in,
+            uses_building_sf=bool(service_uses_building_sf),
+            match_service=False,
+            match_primary_type=False,
+            limit=3,
+        )
+        if client_recent_any is not None and not client_recent_any.empty:
+            st.markdown(f"**{client_name_in}'s 3 most recent projects (any service)**")
+            _render_comps(
+                client_recent_any,
+                show_compare=False,
+                show_service=True,
+                show_property_type=True,
+                display_limit=3,
+            )
+            st.caption(
+                "This client's most recent jobs regardless of service or property "
+                "type — the **Service** and **Property type** columns show what each "
+                "one was. Listed newest first."
+            )
+    elif client_any is not None and not client_any.empty:
+        # No history for this client on this service — show their work across every
+        # service / property type rather than an empty result.
+        st.info(
+            f"No {service_label} projects on record for **{client_name_in}**. "
+            "Showing this client's recent projects across all services instead."
+        )
         _render_comps(
-            client_comps,
+            client_any,
             show_compare=False,
             show_service=True,
             show_property_type=True,
             display_limit=8,
         )
         st.caption(
-            "All of this client's recent projects, regardless of service or property "
-            "type — the **Service** and **Property type** columns show exactly what "
-            "each one was. Useful for the relationship and typical fee level even "
-            "when there's no direct match for your inputs."
+            "All of this client's recent projects, regardless of service or "
+            "property type — the **Service** and **Property type** columns show "
+            "exactly what each one was."
+        )
+    elif client_comps is None and client_any is None:
+        # Every attempt to load this client's history failed (transient), as opposed
+        # to the client genuinely having no past projects.
+        st.warning(
+            f"Couldn't load **{client_name_in}**'s past sales right now (the data "
+            "service may be waking up). Refresh the page in a moment to try again."
+        )
+    else:
+        st.info(
+            f"No past projects on record for **{client_name_in}** in the last 3 "
+            "years."
         )
 
-    try:
-        general_comps = load_comparables(
-            selected_service_id,
-            facility_type_in,
-            secondary_type=secondary_in,
-            building_area=float(building_area_in or 0),
-            land_area=float(land_area_in or 0),
-            uses_building_sf=bool(service_uses_building_sf),
-            min_margin=0.42 if high_margin_only else None,
-            limit=COMPARABLES_STATS_LIMIT,
+    # Broader market context: same service + property type from OTHER clients.
+    other_comps = load_comparables_resilient(
+        selected_service_id,
+        facility_type_in,
+        secondary_type=secondary_in,
+        exclude_client=client_name_in,
+        building_area=float(building_area_in or 0),
+        land_area=float(land_area_in or 0),
+        uses_building_sf=bool(service_uses_building_sf),
+        min_margin=0.42 if high_margin_only else None,
+        limit=COMPARABLES_STATS_LIMIT,
+    )
+    if other_comps is not None and not other_comps.empty:
+        st.markdown(
+            f"**Other comparable {service_label} / {facility_type_in} projects** "
+            "(other clients)"
+            + (" · margin > 42% only" if high_margin_only else "")
         )
-    except Exception:
-        general_comps = None
-
-    if general_comps is not None and not general_comps.empty:
-        st.markdown(f"**Other comparable {service_label} / {facility_type_in} projects** (any client)")
-        _render_comps(general_comps)
+        _render_comps(other_comps)
         st.caption(
-            "Same service and property type from other clients, ranked by closeness "
-            "to your inputs — the best size/scope match when this client has no "
-            "directly comparable job."
-        )
-
-    if (client_comps is None or client_comps.empty) and (
-        general_comps is None or general_comps.empty
-    ):
-        st.caption(
-            f"No comparable past projects found for client '{client_name_in}' or for "
-            f"{service_label} / {facility_type_in} (not enough recent history)."
+            "Same service and property type from other clients — broader market "
+            "context beyond this client's own history, ranked by closeness to your "
+            "inputs."
         )
 else:
-    st.caption(
-        "No comparable past projects found for this service and property type "
-        "(this service may not have enough recent history)."
+    # No client selected: same-service / same-property-type comparables across all
+    # clients, ranked by how close they are to the inputs.
+    comps = load_comparables_resilient(
+        selected_service_id,
+        facility_type_in,
+        secondary_type=secondary_in,
+        building_area=float(building_area_in or 0),
+        land_area=float(land_area_in or 0),
+        uses_building_sf=bool(service_uses_building_sf),
+        min_margin=0.42 if high_margin_only else None,
+        limit=COMPARABLES_STATS_LIMIT,
     )
+
+    if comps is not None and not comps.empty:
+        st.caption(
+            f"Real {service_label} / {facility_type_in} projects from the last 3 years, "
+            "ranked by how close they are to your inputs"
+            + (" (matching secondary property type first)" if secondary_in else "")
+            + (" · margin > 42% only" if high_margin_only else "")
+            + ". These are actual awarded fees — a reality check on the estimates above."
+        )
+        _render_comps(comps)
+        st.caption(
+            "Comparables are ranked by service, property type and size. Client, "
+            "location, building age, limit of liability and service gross margin are "
+            "shown for context — scope details (deliverables, special conditions) "
+            "still vary job to job. Margin is the gross margin earned on that service."
+        )
+    else:
+        st.caption(
+            "No comparable past projects found for this service and property type "
+            "(this service may not have enough recent history)."
+        )
 
 
 st.markdown("### Fee breakdown (rule-based)")
