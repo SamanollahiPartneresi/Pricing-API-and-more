@@ -27,7 +27,7 @@ import json
 import os
 import time
 import warnings
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import joblib
 import pandas as pd
@@ -463,6 +463,87 @@ def query_client_types(
     rows = [{"name": r["customer_type"], "n": int(r["n"])} for _, r in grouped.iterrows()]
     is_unique = scoped and len(rows) == 1
     return (rows[:limit] if limit and limit > 0 else rows), is_unique
+
+
+def _sql_quote(value: str) -> str:
+    """Escape single quotes for safe inlining in a SQL string literal."""
+    return str(value).replace("'", "''")
+
+
+# Same name expression the client directory and the Streamlit comparables use, so
+# a client picked from the directory matches its own history exactly.
+_CLIENT_NAME_EXPR = (
+    'COALESCE(NULLIF(TRIM("client_name"), \'\'), NULLIF(TRIM("company_name"), \'\'))'
+)
+
+
+def _client_history_rows(
+    client_name: str, *, service_id: Optional[int], limit: int
+) -> list[dict[str, Any]]:
+    """A client's most recent past projects (newest first), with their real
+    awarded fees. Restricted to `service_id` when given, else across all services.
+    Reads the comparable-projects history directly via the Query Service."""
+    where = [f"{_CLIENT_NAME_EXPR} = '{_sql_quote(client_name)}'"]
+    if service_id is not None:
+        where.append(f'"order_form_service_id" = {int(service_id)}')
+    sql = (
+        'SELECT "order_form_service_id", "primary_property_type", '
+        '"secondary_property_type", "customer_type", "city", "state", '
+        '"fee", "service_margin", "created_month_label" '
+        f"FROM {COMPARABLE_PROJECTS_TABLE} "
+        f"WHERE {' AND '.join(where)} "
+        'ORDER BY "created_month_label" DESC '
+        f"LIMIT {max(1, int(limit))}"
+    )
+    df = run_sql(sql)
+    if df.empty:
+        return []
+    out: list[dict[str, Any]] = []
+    for _, r in df.iterrows():
+        sid = _to_int(r.get("order_form_service_id"), 0)
+        fee = pd.to_numeric(r.get("fee"), errors="coerce")
+        margin = pd.to_numeric(r.get("service_margin"), errors="coerce")
+        loc = ", ".join(
+            p
+            for p in [str(r.get("city") or "").strip(), str(r.get("state") or "").strip()]
+            if p
+        )
+        out.append({
+            "order_form_service_id": sid,
+            "service_name": SERVICE_NAMES.get(sid, f"Service {sid}"),
+            "when": (str(r.get("created_month_label") or "").strip() or None),
+            "primary_property_type": (str(r.get("primary_property_type") or "").strip() or None),
+            "secondary_property_type": (str(r.get("secondary_property_type") or "").strip() or None),
+            "customer_type": (str(r.get("customer_type") or "").strip() or None),
+            "location": loc or None,
+            "fee": None if pd.isna(fee) else float(fee),
+            "service_margin": None if pd.isna(margin) else float(margin),
+        })
+    return out
+
+
+def query_client_history(
+    client_name: str, *, service_id: Optional[int] = None, limit: int = 5
+) -> dict[str, Any]:
+    """A client's recent awarded-fee history: their most recent projects on the
+    selected service (when one is given), plus their most recent projects across
+    ALL services — so a recently-active client always shows even when their latest
+    work was on a different service. Actual awarded fees, last 3 years, newest
+    first."""
+    client_name = (client_name or "").strip()
+    if not client_name:
+        return {"client_name": "", "service_history": [], "recent_any_service": []}
+    service_history = (
+        _client_history_rows(client_name, service_id=service_id, limit=limit)
+        if service_id is not None
+        else []
+    )
+    recent_any = _client_history_rows(client_name, service_id=None, limit=3)
+    return {
+        "client_name": client_name,
+        "service_history": service_history,
+        "recent_any_service": recent_any,
+    }
 
 
 # Input parsing
@@ -1012,6 +1093,36 @@ def client_types_endpoint():
             "is_unique_for_client": is_unique if client_name else None,
             "count": len(rows),
             "client_types": rows,
+        })
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+
+
+@app.route("/client-history", methods=["GET"])
+def client_history_endpoint():
+    """A client's recent awarded-fee history — actual past project fees, to sanity-
+    check a quote against what the client has paid before. Pass `client_name`
+    (required) and optionally `service_id`: returns their most recent projects on
+    that service plus their most recent projects across ALL services (newest
+    first)."""
+    try:
+        client_name = _to_str(request.args.get("client_name"))
+        if not client_name:
+            return jsonify({"error": "client_name is required."}), 400
+        service_id_raw = request.args.get("service_id")
+        service_id = (
+            int(service_id_raw) if service_id_raw not in (None, "") else None
+        )
+        limit = _to_int(request.args.get("limit"), 5)
+        result = query_client_history(client_name, service_id=service_id, limit=limit)
+        return jsonify({
+            "client_name": result["client_name"],
+            "order_form_service_id": service_id,
+            "service_name": SERVICE_NAMES.get(service_id) if service_id is not None else None,
+            "service_history": result["service_history"],
+            "recent_any_service": result["recent_any_service"],
+            "service_history_count": len(result["service_history"]),
+            "recent_any_count": len(result["recent_any_service"]),
         })
     except Exception as exc:
         return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500

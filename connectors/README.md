@@ -14,12 +14,15 @@ Live API base URL:
 https://pricepilot-api-1304626184.hub.keboola.com
 ```
 
-The connector exposes four actions:
+The connector exposes these actions:
 
 | Action (operationId) | Purpose |
 | --- | --- |
 | `ListServices`        | Get all 4 services with default base fees + factor counts |
 | `GetPricingFactors`   | Get the raw factor rules for one service ("explain my quote") |
+| `ListClients`         | Searchable, sorted client names for a service |
+| `ListClientTypes`     | Searchable client/customer types for a service (scopable to one client) |
+| `GetClientHistory`    | A client's recent past projects with actual awarded fees (sanity-check a quote) |
 | `GetQuote`            | Run the rule-based engine + ML model and return both totals plus a comparison block |
 | `HealthCheck`         | Liveness probe (marked internal) |
 
@@ -101,6 +104,9 @@ You can call the PricePilot Pricing connector to quote commercial property servi
   ml.predicted_fee, and mention the comparison.delta_pct.
 - Use GetPricingFactors when the user asks "why is the price what it is" or
   "what affects the fee" — pass the service_id from the most recent quote.
+- When the user names a client, call ListClients to confirm the exact client name,
+  then GetClientHistory (client_name + the quoted service_id) to show that client's
+  recent awarded fees as a reality check alongside the quote.
 - If rule_based.is_rfp is true, tell the user the turnaround they asked for falls
   outside our standard pricing window and a custom proposal (RFP) is required.
 ```

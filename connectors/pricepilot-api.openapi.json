@@ -207,6 +207,66 @@
         }
       }
     },
+    "/client-history": {
+      "get": {
+        "operationId": "GetClientHistory",
+        "summary": "Get a client's recent past projects (awarded fees)",
+        "description": "Returns a client's recent past projects with their ACTUAL awarded fees,\nso a quote can be sanity-checked against what that client has paid before.\nPass `client_name` (required, use an exact name from /clients) and\noptionally `service_id`. Returns `service_history` (their most recent\nprojects on that service, when service_id is given) and\n`recent_any_service` (their 3 most recent projects across ALL services,\nso a recently-active client always shows even if their latest work was on\na different service). Newest first; covers roughly the last 3 years.\n",
+        "parameters": [
+          {
+            "name": "client_name",
+            "in": "query",
+            "description": "Exact client name (use a value returned by /clients).",
+            "required": true,
+            "type": "string",
+            "x-ms-summary": "Client name"
+          },
+          {
+            "name": "service_id",
+            "in": "query",
+            "description": "Order-form service id to scope service_history. 1 = PCA Equity, 2 = ESA, 3 = Zoning, 4 = PCA Debt.",
+            "required": false,
+            "type": "integer",
+            "x-ms-summary": "Service ID",
+            "enum": [
+              1,
+              2,
+              3,
+              4
+            ]
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Max projects to return for the selected service (default 5).",
+            "required": false,
+            "type": "integer",
+            "default": 5,
+            "x-ms-summary": "Limit"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Client history",
+            "schema": {
+              "$ref": "#/definitions/ClientHistoryResponse"
+            }
+          },
+          "400": {
+            "description": "Missing client_name",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          },
+          "500": {
+            "description": "Lookup failure",
+            "schema": {
+              "$ref": "#/definitions/ErrorResponse"
+            }
+          }
+        }
+      }
+    },
     "/quote": {
       "post": {
         "operationId": "GetQuote",
@@ -394,7 +454,7 @@
         },
         "is_unique_for_client": {
           "type": "boolean",
-          "description": "True when client_name was supplied and that client maps to a single client type. Null when no client_name was supplied."
+          "description": "True when client_name was supplied and that client maps to a single\nclient type. Null when no client_name was supplied.\n"
         },
         "count": {
           "type": "integer",
@@ -420,6 +480,93 @@
           "type": "integer",
           "description": "Number of historical projects backing this option",
           "example": 128
+        }
+      }
+    },
+    "ClientHistoryResponse": {
+      "type": "object",
+      "properties": {
+        "client_name": {
+          "type": "string",
+          "example": "Cardinal Group"
+        },
+        "order_form_service_id": {
+          "type": "integer",
+          "description": "The service_id that service_history was scoped to (null if none)",
+          "example": 4
+        },
+        "service_name": {
+          "type": "string",
+          "example": "PCA Debt"
+        },
+        "service_history": {
+          "type": "array",
+          "description": "Most recent projects for this client on the selected service",
+          "items": {
+            "$ref": "#/definitions/ClientHistoryRow"
+          }
+        },
+        "recent_any_service": {
+          "type": "array",
+          "description": "This client's 3 most recent projects across ALL services",
+          "items": {
+            "$ref": "#/definitions/ClientHistoryRow"
+          }
+        },
+        "service_history_count": {
+          "type": "integer",
+          "example": 3
+        },
+        "recent_any_count": {
+          "type": "integer",
+          "example": 3
+        }
+      }
+    },
+    "ClientHistoryRow": {
+      "type": "object",
+      "properties": {
+        "order_form_service_id": {
+          "type": "integer",
+          "example": 4
+        },
+        "service_name": {
+          "type": "string",
+          "example": "PCA Debt"
+        },
+        "when": {
+          "type": "string",
+          "description": "When the project was created (month label)",
+          "example": "2026-04"
+        },
+        "primary_property_type": {
+          "type": "string",
+          "example": "Industrial"
+        },
+        "secondary_property_type": {
+          "type": "string",
+          "example": "Warehouse/Distribution"
+        },
+        "customer_type": {
+          "type": "string",
+          "example": "Lender - CMBS"
+        },
+        "location": {
+          "type": "string",
+          "description": "City, state (when known)",
+          "example": "Dallas, TX"
+        },
+        "fee": {
+          "type": "number",
+          "format": "float",
+          "description": "Actual awarded fee (USD)",
+          "example": 3200.0
+        },
+        "service_margin": {
+          "type": "number",
+          "format": "float",
+          "description": "Service gross margin (0-1 fraction) for context",
+          "example": 0.62
         }
       }
     },
@@ -528,13 +675,13 @@
         },
         "secondary_property_type": {
           "type": "string",
-          "description": "Secondary property type / sub-type (e.g. \"Warehouse/Distribution\", \"Medical Office\", \"Low-Rise Multifamily\", \"Full Service Hotel\"). Optional. The special value \"Vacant Land\" changes the Size pricing tier, so pass it when the site is undeveloped land.",
+          "description": "Secondary property type / sub-type (e.g. \"Warehouse/Distribution\",\n\"Medical Office\", \"Low-Rise Multifamily\", \"Full Service Hotel\").\nOptional. The special value \"Vacant Land\" changes the Size pricing\ntier, so pass it when the site is undeveloped land.\n",
           "example": "Vacant Land",
           "x-ms-summary": "Secondary property type"
         },
         "client_type": {
           "type": "string",
-          "description": "Client / customer-type segment (e.g. \"Lender - CMBS\", \"Lender - Bank/Portfolio\", \"Equity - Institutional\", \"Developer\", \"Broker - Mortgage\"). Optional. Feeds the ML model, which learned how fees vary by client type, so it shifts the ML prediction and range. The rule-based estimate ignores it.",
+          "description": "Client / customer-type segment (e.g. \"Lender - CMBS\",\n\"Lender - Bank/Portfolio\", \"Equity - Institutional\", \"Developer\",\n\"Broker - Mortgage\"). Optional. Feeds the ML model, which learned how\nfees vary by client type, so it shifts the ML prediction and range.\nThe rule-based estimate ignores it.\n",
           "example": "Lender - CMBS",
           "x-ms-summary": "Client type"
         },
@@ -671,13 +818,13 @@
         "predicted_low": {
           "type": "number",
           "format": "float",
-          "description": "Low end of the likely fee range (50th percentile / median model), rounded to nearest $50. Use with predicted_high to present a range.",
+          "description": "Low end of the likely fee range (50th percentile / median model),\nrounded to nearest $50. Use with predicted_high to present a range.\n",
           "example": 6500
         },
         "predicted_high": {
           "type": "number",
           "format": "float",
-          "description": "High end of the likely fee range (85th percentile model), rounded to nearest $50. Premium / complex / busy-period jobs land near this bound.",
+          "description": "High end of the likely fee range (85th percentile model), rounded to\nnearest $50. Premium / complex / busy-period jobs land near this bound.\n",
           "example": 9200
         },
         "predicted_low_raw": {
