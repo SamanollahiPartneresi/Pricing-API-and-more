@@ -165,7 +165,7 @@ SERVICE_METRIC_SCOPE = {1: "Equity PCA", 2: "Phase I ESA", 4: "Debt PCA"}
 ML_SUPPORTED_SERVICE_IDS = set(SERVICE_METRIC_SCOPE)
 
 # Human-facing app version. Bump on meaningful UI/logic releases.
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.5.1"
 
 # Rule-engine logic version (bump when the factor-matching logic changes).
 RULE_ENGINE_VERSION = "1.0.0"
@@ -1986,6 +1986,7 @@ if client_name_in:
         )
 
     if client_comps is not None and not client_comps.empty:
+        st.markdown(f"#### 👤 {client_name_in}'s {service_label} history")
         st.caption(
             f"**{client_name_in}**'s past {service_label} projects from the last 3 "
             f"years — {facility_type_in} jobs first, then their other {service_label} "
@@ -2014,7 +2015,7 @@ if client_name_in:
             limit=3,
         )
         if client_recent_any is not None and not client_recent_any.empty:
-            st.markdown(f"**{client_name_in}'s 3 most recent projects (any service)**")
+            st.markdown(f"#### 🕒 {client_name_in}'s 3 most recent projects (any service)")
             _render_comps(
                 client_recent_any,
                 show_compare=False,
@@ -2074,7 +2075,7 @@ if client_name_in:
     )
     if other_comps is not None and not other_comps.empty:
         st.markdown(
-            f"**Other comparable {service_label} / {facility_type_in} projects** "
+            f"#### 🏢 Other comparable {service_label} / {facility_type_in} projects "
             "(other clients)"
             + (" · margin > 42% only" if high_margin_only else "")
         )
@@ -2100,6 +2101,7 @@ else:
     )
 
     if comps is not None and not comps.empty:
+        st.markdown(f"#### 📊 Comparable {service_label} / {facility_type_in} projects")
         st.caption(
             f"Real {service_label} / {facility_type_in} projects from the last 3 years, "
             "ranked by how close they are to your inputs"
