@@ -350,6 +350,11 @@ this Git repo** (entrypoint `pricing_rules_calculator/main.py`, branch `main`).
   turnaround on the left; ML point + range + accuracy + feature importance on the
   right), then full-width comparable past projects, percentile band, and
   provenance.
+- **Location-aware comparables:** an optional **State** input (cleaned to valid
+  US/CA jurisdiction codes via `load_states`, since the raw `state` column has
+  junk) floats same-state jobs up in every comparables ranking *and* adds a
+  dedicated "📍 Projects in {state}" table. Location informs the comparison /
+  sales positioning, **not** the computed rule/ML fee.
 
 `query_data` uses the Query Service with `WORKSPACE_ID` (`2950783790`) +
 `BRANCH_ID` (`1297242`) secrets — which is why the UI can fall back to direct SQL
