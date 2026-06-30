@@ -165,7 +165,7 @@ SERVICE_METRIC_SCOPE = {1: "Equity PCA", 2: "Phase I ESA", 4: "Debt PCA"}
 ML_SUPPORTED_SERVICE_IDS = set(SERVICE_METRIC_SCOPE)
 
 # Human-facing app version. Bump on meaningful UI/logic releases.
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.7.0"
 
 # Rule-engine logic version (bump when the factor-matching logic changes).
 RULE_ENGINE_VERSION = "1.0.0"
@@ -813,6 +813,44 @@ def load_states() -> list[str]:
         return []
     vals = {str(s).strip().upper() for s in df["state"].tolist() if str(s).strip()}
     return sorted(vals & _VALID_STATE_CODES)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_service_counts(
+    *, client_name: str = "", primary_type: str = "", customer_type: str = ""
+) -> pd.DataFrame | None:
+    """Count past projects per service, optionally scoped to a client, property
+    type and/or customer type. Powers the cross-sell panel: a client's own
+    service mix vs. what's commonly bought on a property type. Returns None on a
+    transient query failure, an empty frame when there's genuinely no history."""
+    where: list[str] = []
+    if client_name:
+        where.append(
+            'COALESCE(NULLIF(TRIM("client_name"), \'\'), NULLIF(TRIM("company_name"), \'\')) = '
+            f"'{_sql_quote(client_name)}'"
+        )
+    if primary_type:
+        hist = APP_TO_HIST_PROPERTY.get(primary_type, primary_type)
+        where.append(f"\"primary_property_type\" = '{_sql_quote(hist)}'")
+    if customer_type:
+        where.append(f"\"customer_type\" = '{_sql_quote(customer_type)}'")
+    where_sql = ("WHERE " + " AND ".join(where) + " ") if where else ""
+    sql = (
+        'SELECT "order_form_service_id" AS "service_id", COUNT(*) AS "n", '
+        'MAX("created_month_label") AS "last_month" '
+        f"FROM {COMPARABLE_PROJECTS_TABLE} {where_sql}"
+        'GROUP BY "order_form_service_id"'
+    )
+    try:
+        df = query_data(sql)
+    except Exception:
+        return None
+    if df is None:
+        return None
+    if not df.empty:
+        df["service_id"] = pd.to_numeric(df["service_id"], errors="coerce")
+        df["n"] = pd.to_numeric(df["n"], errors="coerce")
+    return df
 
 
 def fee_hint_caption(
@@ -1782,6 +1820,79 @@ with ml_col:
                     ),
                 },
             )
+
+
+# Cross-sell — make the tool "smarter" by suggesting other services to offer this
+# client beyond the one being quoted. Built from the client's own service history
+# vs. what's commonly bought on this property type, across the service catalog
+# (ESA / PCA Equity / PCA Debt / Zoning).
+st.markdown("---")
+st.markdown("### 💡 Other services to offer")
+if client_name_in:
+    _mix = load_service_counts(client_name=client_name_in)
+    _type_pop = load_service_counts(primary_type=facility_type_in)
+    if _mix is None:
+        st.caption(
+            "Couldn't load this client's service mix right now (the data service "
+            "may be waking up). Refresh in a moment to try again."
+        )
+    elif _mix.empty:
+        st.caption(
+            f"No service history on record for **{client_name_in}** yet, so there's "
+            "nothing to base a cross-sell suggestion on."
+        )
+    else:
+        _bought = {
+            int(s): int(n)
+            for s, n in zip(_mix["service_id"], _mix["n"])
+            if pd.notna(s) and pd.notna(n)
+        }
+        _pop = (
+            {
+                int(s): int(n)
+                for s, n in zip(_type_pop["service_id"], _type_pop["n"])
+                if pd.notna(s) and pd.notna(n)
+            }
+            if _type_pop is not None and not _type_pop.empty
+            else {}
+        )
+        _catalog = sorted(SERVICE_NAMES.keys())
+        _also = [s for s in _catalog if s in _bought and s != selected_service_id]
+        _new = [s for s in _catalog if s not in _bought and s != selected_service_id]
+        # Lead with the services most commonly bought on this property type.
+        _new.sort(key=lambda s: _pop.get(s, 0), reverse=True)
+
+        st.caption(
+            f"Currently quoting **{service_label}** for **{client_name_in}**. Based "
+            "on this client's purchase history and what's common for "
+            f"**{facility_type_in}**, here's what else to put in front of them."
+        )
+        _c_has, _c_new = st.columns(2, gap="large", border=True)
+        with _c_has:
+            st.markdown("##### ✅ Already buys from us")
+            if _also:
+                for s in _also:
+                    st.markdown(f"- **{SERVICE_NAMES[s]}** · {_bought[s]:,} past job(s)")
+            else:
+                st.caption(f"Only {service_label} on record for this client so far.")
+        with _c_new:
+            st.markdown("##### 🎯 Hasn't purchased yet — pitch these")
+            if _new:
+                for s in _new:
+                    _hint = (
+                        f" · common on {facility_type_in} ({_pop[s]:,} jobs)"
+                        if _pop.get(s)
+                        else ""
+                    )
+                    st.markdown(f"- **{SERVICE_NAMES[s]}**{_hint}")
+            else:
+                st.caption("This client already uses every service we offer. 🎉")
+else:
+    st.caption(
+        "Select a **client** above to see which additional services they could be "
+        "offered — based on their purchase history and what's common for this "
+        "property type."
+    )
 
 
 # Comparable past projects — real historical jobs most similar to these inputs,
