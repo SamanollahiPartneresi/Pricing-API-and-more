@@ -23,7 +23,8 @@ ML pricing for Partner Engineering and Science — Keboola Data App + Copilot St
 | `connectors/` | Power Platform OpenAPI spec + Copilot Studio import guide |
 | `keboola-config/` | Nginx + Supervisord for the Keboola Python data app runtime |
 | `docs/copilot-instructions.md` | Copilot Studio system prompt |
-| `pyproject.toml` | Python dependencies |
+| `pyproject.toml` | Python dependencies (Flask API) |
+| `requirements.txt` | Python dependencies (Streamlit app Git deploy) |
 
 ## Deploy to Keboola (PricePilot API)
 
@@ -34,6 +35,20 @@ ML pricing for Partner Engineering and Science — Keboola Data App + Copilot St
    - Use **repository root** (this folder has `api.py` at the top level).
 3. **Do not** paste Python into the Git URL field.
 4. Deploy and wait until status is **Running**.
+
+## Deploy to Keboola (Service Pricing Tool — Streamlit)
+
+The Streamlit app also deploys from this repo (no more copy-paste).
+
+1. Open the **Service Pricing Tool** Data App → **Code Source → Git Repository**.
+2. Repository: `https://github.com/SamanollahiPartneresi/Pricing-API-and-more`,
+   branch `main`, **entrypoint** `pricing_rules_calculator/main.py`.
+3. Private-repo auth: GitHub username + a fine-grained PAT with **Contents:
+   Read-only** (packages come from the repo-root `requirements.txt`).
+4. Deploy and wait until status is **Running**.
+
+After that, ship UI changes by pushing to `main` and redeploying. See
+[`docs/ARCHITECTURE.md` §11.1](docs/ARCHITECTURE.md).
 
 ## Test the API
 
