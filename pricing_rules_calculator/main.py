@@ -164,7 +164,7 @@ SERVICE_METRIC_SCOPE = {1: "Equity PCA", 2: "Phase I ESA", 4: "Debt PCA"}
 ML_SUPPORTED_SERVICE_IDS = set(SERVICE_METRIC_SCOPE)
 
 # Human-facing app version. Bump on meaningful UI/logic releases.
-APP_VERSION = "1.3.6"
+APP_VERSION = "1.4.0"
 
 # Rule-engine logic version (bump when the factor-matching logic changes).
 RULE_ENGINE_VERSION = "1.0.0"
@@ -1414,60 +1414,123 @@ if ml_payload is not None:
         ml_predicted_fee = None
 
 
-# Results
+# Results — Rule-based (left) and ML model (right) shown side by side, each
+# panel self-contained with its own metrics and supporting detail.
 st.markdown("---")
-st.markdown("### Results")
-
-st.markdown("#### Rule-based estimate")
-m1, m2, m3 = st.columns(3)
-m1.metric("Base fee", f"${result['base_fee']:,.0f}")
-m2.metric("Subtotal", f"${result['subtotal_before_rounding']:,.0f}")
-total_display = (
-    "RFP" if result["total_fee"] == "RFP" else f"${result['total_fee']:,.0f}"
+st.markdown(
+    "<h3 style='text-align:center; margin-bottom:0.25rem;'>Results</h3>",
+    unsafe_allow_html=True,
 )
-m3.metric("Total fee", total_display)
-if result["is_rfp"]:
-    rfp_labels = [
-        label for col, label in FEE_COLUMNS if result["fees"].get(col) == "RFP"
-    ]
-    if facility_type_in.strip().lower() == "special purpose":
-        reason_short = "the **Special Purpose** property type"
-    elif rfp_labels:
-        reason_short = "**" + "**, **".join(rfp_labels) + "**"
-    else:
-        reason_short = "these inputs"
-    m3.warning(f"Manual quote needed — because of {reason_short}.")
+st.markdown(
+    "<p style='text-align:center; color:rgba(49,51,63,0.6); font-size:0.875rem; "
+    "margin-top:0;'>Two independent estimates, side by side — the "
+    "<strong>rule-based engine</strong> on the left and the <strong>ML model</strong> "
+    "on the right. Each panel carries its own supporting detail.</p>",
+    unsafe_allow_html=True,
+)
 
-# Context for the rule-based total: base-fee override note + percentile positioning.
-_stats = fee_stats_row(service_id=selected_service_id, property_type=facility_type_in)
-if base_fee_in != default_base_fee:
-    _median_txt = (
-        f" · historical median for {service_label}/{facility_type_in}: "
-        f"${_stats['median']:,.0f}"
-        if _stats and not pd.isna(_stats.get("median"))
-        else ""
+# Two bordered panels give a reliable full-height split between the rule-based
+# (left) and ML (right) sides — a CSS vertical rule won't stretch to match the
+# taller panel, so each side gets its own border box instead.
+rule_col, ml_col = st.columns(2, gap="large", border=True)
+
+# ───────────────────────── LEFT: everything rule-based ─────────────────────────
+with rule_col:
+    st.markdown("#### 📐 Rule-based estimate")
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Base fee", f"${result['base_fee']:,.0f}")
+    m2.metric("Subtotal", f"${result['subtotal_before_rounding']:,.0f}")
+    total_display = (
+        "RFP" if result["total_fee"] == "RFP" else f"${result['total_fee']:,.0f}"
     )
-    st.caption(
-        f"✏️ Manual base-fee override active (default ${default_base_fee:,.0f})"
-        f"{_median_txt}."
-    )
-if isinstance(result["total_fee"], (int, float)):
-    _pct = estimate_percentile(float(result["total_fee"]), _stats)
-    if _pct is not None:
-        st.caption(
-            f"📊 This fee sits at about the **{_pct:.0f}th percentile** for "
-            f"{service_label}/{facility_type_in} projects (last 3 yrs)."
+    m3.metric("Total fee", total_display)
+    if result["is_rfp"]:
+        rfp_labels = [
+            label for col, label in FEE_COLUMNS if result["fees"].get(col) == "RFP"
+        ]
+        if facility_type_in.strip().lower() == "special purpose":
+            reason_short = "the **Special Purpose** property type"
+        elif rfp_labels:
+            reason_short = "**" + "**, **".join(rfp_labels) + "**"
+        else:
+            reason_short = "these inputs"
+        m3.warning(f"Manual quote needed — because of {reason_short}.")
+
+    # Context for the rule-based total: base-fee override note + percentile positioning.
+    _stats = fee_stats_row(service_id=selected_service_id, property_type=facility_type_in)
+    if base_fee_in != default_base_fee:
+        _median_txt = (
+            f" · historical median for {service_label}/{facility_type_in}: "
+            f"${_stats['median']:,.0f}"
+            if _stats and not pd.isna(_stats.get("median"))
+            else ""
         )
+        st.caption(
+            f"✏️ Manual base-fee override active (default ${default_base_fee:,.0f})"
+            f"{_median_txt}."
+        )
+    if isinstance(result["total_fee"], (int, float)):
+        _pct = estimate_percentile(float(result["total_fee"]), _stats)
+        if _pct is not None:
+            st.caption(
+                f"📊 This fee sits at about the **{_pct:.0f}th percentile** for "
+                f"{service_label}/{facility_type_in} projects (last 3 yrs)."
+            )
+
+    # Fee breakdown (rule-based) — how each pricing factor adjusts the base fee.
+    st.markdown("##### Fee breakdown")
+    st.caption(
+        "How each pricing factor adjusts the base fee. The ML model (right) "
+        "returns a single predicted total, not a per-category split."
+    )
+    rows = []
+    for col, label in FEE_COLUMNS:
+        outcome: FeeOutcome = result["outcomes"][col]
+        amount = outcome.amount
+        factor = outcome.factor
+        if amount == "RFP":
+            amount_display = "RFP"
+            pct_display = factor.raw_value + "%" if factor and factor.percentage == "RFP" else "—"
+        elif amount == 0 and factor is None:
+            amount_display = "—"
+            pct_display = "—"
+        else:
+            amount_display = f"${amount:,}" if isinstance(amount, int) and amount >= 0 else f"-${abs(amount):,}"
+            pct_display = f"{float(factor.percentage) * 100:+.1f}%" if factor else "—"
+        rows.append(
+            {
+                "Category": label,
+                "Matched rule": factor.description if factor else "— (input not provided / not applicable)",
+                "Level": factor.level if factor else "—",
+                "Factor": pct_display,
+                "Amount": amount_display,
+            }
+        )
+    breakdown_df = pd.DataFrame(rows)
+    st.dataframe(breakdown_df, width="stretch", hide_index=True)
+
+    if result["tat_totals"]:
+        st.markdown("##### Total fee at each turnaround option")
+        tat_totals = result["tat_totals"]
+        tat_df = pd.DataFrame(
+            [
+                {"Days": int(d), "Total fee": "RFP" if v == "RFP" else f"${v:,}"}
+                for d, v in tat_totals.items()
+            ]
+        )
+        st.dataframe(tat_df, width="stretch", hide_index=True)
 
 
-# ML model row (always rendered when enabled; shows either metrics or a clean error)
-if ml_enabled:
-    st.markdown("#### ML model prediction")
-    if not ml_supported:
+# ───────────────────────── RIGHT: everything ML-based ─────────────────────────
+with ml_col:
+    st.markdown("#### 🤖 ML model prediction")
+    if not ml_enabled:
+        st.caption("ML model call is disabled in the sidebar.")
+    elif not ml_supported:
         st.info(
             f"ML prediction isn't available for **{service_label}** yet — the model "
             "is trained only on PCA Equity, ESA, and PCA Debt. Use the rule-based "
-            "estimate above for this service."
+            "estimate on the left for this service."
         )
     elif ml_payload is not None:
         ml_predicted = float(ml_payload.get("predicted_fee") or 0.0)
@@ -1501,7 +1564,7 @@ if ml_enabled:
                 f"${delta_abs:+,.0f}",
                 delta=f"{delta_pct:+.1f}%",
                 delta_color="off",
-                help="How the ML prediction compares to the rule-based total fee above.",
+                help="How the ML prediction compares to the rule-based total fee on the left.",
             )
             if abs(delta_pct) >= VARIANCE_WARN_THRESHOLD * 100.0:
                 st.warning(
@@ -1556,100 +1619,98 @@ if ml_enabled:
     elif ml_error:
         st.error(f"ML model unavailable: {ml_error}")
         st.caption(
-            "Rule-based result above is unaffected. The PricePilot API may be waking "
-            "from sleep — try again in a few seconds."
+            "Rule-based result on the left is unaffected. The PricePilot API may be "
+            "waking from sleep — try again in a few seconds."
         )
     else:
         st.info("ML model returned no payload.")
-else:
-    st.caption("ML model call is disabled in the sidebar.")
 
+    # Model accuracy — how well the deployed model did on a hold-out test set, both
+    # overall and (when available) for the selected service, so users can gauge how
+    # much to trust the prediction above. Skipped when the model doesn't cover the
+    # selected service (e.g. Zoning) — there's no prediction to vouch for.
+    if ml_enabled and ml_supported:
+        try:
+            model_metrics_df = load_model_metrics()
+        except Exception:
+            model_metrics_df = None
 
-# Model accuracy — how well the deployed model did on a hold-out test set, both
-# overall and (when available) for the selected service, so users can gauge how
-# much to trust the prediction above. Skipped when the model doesn't cover the
-# selected service (e.g. Zoning) — there's no prediction to vouch for.
-if ml_enabled and ml_supported:
-    try:
-        model_metrics_df = load_model_metrics()
-    except Exception:
-        model_metrics_df = None
-
-    overall_w10 = metric_value(model_metrics_df, "model_test", "within_10pct")
-    if overall_w10 is not None:
-        overall_med = metric_value(model_metrics_df, "model_test", "median_ape_pct")
-        with st.expander("How accurate is this model?", expanded=False):
-            st.caption(
-                "Accuracy on a 20% hold-out test set the model never trained on. "
-                '"Within 10%" is the share of past quotes the model predicted to '
-                "inside 10% of the real awarded fee."
-            )
-            a1, a2, a3, a4 = st.columns(4)
-            a1.metric("Within 10%", f"{overall_w10:.0f}%")
-            _w20 = metric_value(model_metrics_df, "model_test", "within_20pct")
-            a2.metric("Within 20%", f"{_w20:.0f}%" if _w20 is not None else "—")
-            a3.metric(
-                "Median error",
-                f"{overall_med:.1f}%" if overall_med is not None else "—",
-            )
-            _r2 = metric_value(model_metrics_df, "model_test", "r2_dollars")
-            a4.metric("R² (dollars)", f"{_r2:.2f}" if _r2 is not None else "—")
-
-            svc_scope_name = SERVICE_METRIC_SCOPE.get(selected_service_id)
-            svc_scope = f"service_test::{svc_scope_name}" if svc_scope_name else None
-            svc_w10 = metric_value(model_metrics_df, svc_scope, "within_10pct") if svc_scope else None
-            if svc_w10 is not None:
-                st.markdown(f"**For {service_label} specifically**")
-                svc_med = metric_value(model_metrics_df, svc_scope, "median_ape_pct")
-                svc_w20 = metric_value(model_metrics_df, svc_scope, "within_20pct")
-                svc_n = metric_value(model_metrics_df, svc_scope, "n")
-                b1, b2, b3, b4 = st.columns(4)
-                b1.metric("Within 10%", f"{svc_w10:.0f}%")
-                b2.metric("Within 20%", f"{svc_w20:.0f}%" if svc_w20 is not None else "—")
-                b3.metric(
-                    "Median error",
-                    f"{svc_med:.1f}%" if svc_med is not None else "—",
-                )
-                b4.metric("Test jobs", f"{svc_n:,.0f}" if svc_n is not None else "—")
-            elif svc_scope_name is None:
+        overall_w10 = metric_value(model_metrics_df, "model_test", "within_10pct")
+        if overall_w10 is not None:
+            overall_med = metric_value(model_metrics_df, "model_test", "median_ape_pct")
+            with st.expander("How accurate is this model?", expanded=False):
                 st.caption(
-                    f"No service-specific accuracy for {service_label} yet — the "
-                    "overall figures above still apply."
+                    "Accuracy on a 20% hold-out test set the model never trained on. "
+                    '"Within 10%" is the share of past quotes the model predicted to '
+                    "inside 10% of the real awarded fee."
                 )
+                a1, a2 = st.columns(2)
+                a1.metric("Within 10%", f"{overall_w10:.0f}%")
+                _w20 = metric_value(model_metrics_df, "model_test", "within_20pct")
+                a2.metric("Within 20%", f"{_w20:.0f}%" if _w20 is not None else "—")
+                a3, a4 = st.columns(2)
+                a3.metric(
+                    "Median error",
+                    f"{overall_med:.1f}%" if overall_med is not None else "—",
+                )
+                _r2 = metric_value(model_metrics_df, "model_test", "r2_dollars")
+                a4.metric("R² (dollars)", f"{_r2:.2f}" if _r2 is not None else "—")
 
+                svc_scope_name = SERVICE_METRIC_SCOPE.get(selected_service_id)
+                svc_scope = f"service_test::{svc_scope_name}" if svc_scope_name else None
+                svc_w10 = metric_value(model_metrics_df, svc_scope, "within_10pct") if svc_scope else None
+                if svc_w10 is not None:
+                    st.markdown(f"**For {service_label} specifically**")
+                    svc_med = metric_value(model_metrics_df, svc_scope, "median_ape_pct")
+                    svc_w20 = metric_value(model_metrics_df, svc_scope, "within_20pct")
+                    svc_n = metric_value(model_metrics_df, svc_scope, "n")
+                    b1, b2 = st.columns(2)
+                    b1.metric("Within 10%", f"{svc_w10:.0f}%")
+                    b2.metric("Within 20%", f"{svc_w20:.0f}%" if svc_w20 is not None else "—")
+                    b3, b4 = st.columns(2)
+                    b3.metric(
+                        "Median error",
+                        f"{svc_med:.1f}%" if svc_med is not None else "—",
+                    )
+                    b4.metric("Test jobs", f"{svc_n:,.0f}" if svc_n is not None else "—")
+                elif svc_scope_name is None:
+                    st.caption(
+                        f"No service-specific accuracy for {service_label} yet — the "
+                        "overall figures above still apply."
+                    )
 
-# What drives the fee — global feature importance for the deployed ML model, so
-# users can see which inputs move the prediction the most (and which barely matter).
-# Skipped for services the model doesn't cover (e.g. Zoning).
-try:
-    importance_df = load_feature_importance() if ml_supported else None
-except Exception:
-    importance_df = None
+    # What drives the fee — global feature importance for the deployed ML model, so
+    # users can see which inputs move the prediction the most (and which barely matter).
+    # Skipped for services the model doesn't cover (e.g. Zoning).
+    try:
+        importance_df = load_feature_importance() if ml_supported else None
+    except Exception:
+        importance_df = None
 
-if importance_df is not None and not importance_df.empty:
-    with st.expander("What drives the fee — ML model feature importance", expanded=False):
-        st.caption(
-            "How much each input influences the ML model's fee prediction across all "
-            "past projects (gain-based importance). Longer bar = bigger effect on the "
-            "fee. This is the model's overall ranking, not specific to this quote."
-        )
-        top = importance_df.head(8)
-        st.dataframe(
-            pd.DataFrame(
-                {"Feature": top["feature_label"], "Importance": top["share_pct"]}
-            ),
-            width="stretch",
-            hide_index=True,
-            column_config={
-                "Importance": st.column_config.ProgressColumn(
-                    "Importance",
-                    help="Share of the model's total gain attributed to this feature.",
-                    format="%.1f%%",
-                    min_value=0.0,
-                    max_value=float(top["share_pct"].max() or 1.0),
+    if importance_df is not None and not importance_df.empty:
+        with st.expander("What drives the fee — ML model feature importance", expanded=False):
+            st.caption(
+                "How much each input influences the ML model's fee prediction across all "
+                "past projects (gain-based importance). Longer bar = bigger effect on the "
+                "fee. This is the model's overall ranking, not specific to this quote."
+            )
+            top = importance_df.head(8)
+            st.dataframe(
+                pd.DataFrame(
+                    {"Feature": top["feature_label"], "Importance": top["share_pct"]}
                 ),
-            },
-        )
+                width="stretch",
+                hide_index=True,
+                column_config={
+                    "Importance": st.column_config.ProgressColumn(
+                        "Importance",
+                        help="Share of the model's total gain attributed to this feature.",
+                        format="%.1f%%",
+                        min_value=0.0,
+                        max_value=float(top["share_pct"].max() or 1.0),
+                    ),
+                },
+            )
 
 
 # Comparable past projects — real historical jobs most similar to these inputs,
@@ -1995,50 +2056,6 @@ else:
             "No comparable past projects found for this service and property type "
             "(this service may not have enough recent history)."
         )
-
-
-st.markdown("### Fee breakdown (rule-based)")
-st.caption(
-    "Shows how each pricing factor adjusts the base fee. The ML model returns a single "
-    "predicted total, not a per-category split."
-)
-rows = []
-for col, label in FEE_COLUMNS:
-    outcome: FeeOutcome = result["outcomes"][col]
-    amount = outcome.amount
-    factor = outcome.factor
-    if amount == "RFP":
-        amount_display = "RFP"
-        pct_display = factor.raw_value + "%" if factor and factor.percentage == "RFP" else "—"
-    elif amount == 0 and factor is None:
-        amount_display = "—"
-        pct_display = "—"
-    else:
-        amount_display = f"${amount:,}" if isinstance(amount, int) and amount >= 0 else f"-${abs(amount):,}"
-        pct_display = f"{float(factor.percentage) * 100:+.1f}%" if factor else "—"
-    rows.append(
-        {
-            "Category": label,
-            "Matched rule": factor.description if factor else "— (input not provided / not applicable)",
-            "Level": factor.level if factor else "—",
-            "Factor": pct_display,
-            "Amount": amount_display,
-        }
-    )
-breakdown_df = pd.DataFrame(rows)
-st.dataframe(breakdown_df, width="stretch", hide_index=True)
-
-
-if result["tat_totals"]:
-    st.markdown("### Total fee at each turnaround option")
-    tat_totals = result["tat_totals"]
-    tat_df = pd.DataFrame(
-        [
-            {"Days": int(d), "Total fee": "RFP" if v == "RFP" else f"${v:,}"}
-            for d, v in tat_totals.items()
-        ]
-    )
-    st.dataframe(tat_df, width="stretch", hide_index=True)
 
 
 with st.expander("Input snapshot"):
