@@ -165,7 +165,7 @@ SERVICE_METRIC_SCOPE = {1: "Equity PCA", 2: "Phase I ESA", 4: "Debt PCA"}
 ML_SUPPORTED_SERVICE_IDS = set(SERVICE_METRIC_SCOPE)
 
 # Human-facing app version. Bump on meaningful UI/logic releases.
-APP_VERSION = "1.5.2"
+APP_VERSION = "1.6.0"
 
 # Rule-engine logic version (bump when the factor-matching logic changes).
 RULE_ENGINE_VERSION = "1.0.0"
@@ -1347,6 +1347,17 @@ with col3:
         ),
     )
 
+    address_in = st.text_input(
+        "Project address",
+        placeholder="123 Main St, City, ST 00000",
+        help=(
+            "Street address of the subject property. Will be used to geocode the "
+            "site and flag prior work at the same location (within ~10 m). "
+            "Same-site matching is not live yet — past-project coordinates aren't "
+            "in the warehouse — so this is captured for now and shown below."
+        ),
+    )
+
     travel_options = factors_df[factors_df["category"] == "Travel Difficulty"].copy()
     travel_options["_lvl"] = pd.to_numeric(travel_options["level"], errors="coerce")
     travel_options = travel_options.sort_values("_lvl")
@@ -2205,6 +2216,29 @@ if state_in:
             )
 
 
+# Same-site prior work (PLACEHOLDER). Goal: geocode the entered address to
+# lat/long and flag any past project at the same site (within ~10 m). The
+# `comparable_projects` table has city/state/country but NO coordinates today,
+# and no geocoding is wired up, so this is a stub bound to the address input —
+# ready to become a real proximity match once both pieces exist.
+st.markdown("---")
+st.markdown("#### 📌 Same-site prior work")
+if address_in and address_in.strip():
+    st.info(
+        f"**Address entered:** {address_in.strip()}\n\n"
+        "Same-site matching is **coming soon**: we'll geocode this address to "
+        "latitude/longitude and flag any past projects within ~10 m, so you can "
+        "see instantly whether we've worked this exact site before. It can't run "
+        "yet — past-project coordinates aren't in the data warehouse."
+    )
+else:
+    st.caption(
+        "🔜 **Coming soon.** Enter a **Project address** in the Location & risk "
+        "column and this will check for prior work at the same site (within "
+        "~10 m), once geocoding and past-project coordinates are available."
+    )
+
+
 with st.expander("Input snapshot"):
     st.json(
         {
@@ -2218,6 +2252,7 @@ with st.expander("Input snapshot"):
                 "client_name": client_name_in,
                 "country_code": country_in,
                 "state": state_in,
+                "address": address_in,
                 "building_area": building_area_in,
                 "land_area": land_area_in,
                 "number_of_stories": number_of_stories_in,
