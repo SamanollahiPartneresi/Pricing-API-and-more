@@ -165,7 +165,7 @@ SERVICE_METRIC_SCOPE = {1: "Equity PCA", 2: "Phase I ESA", 4: "Debt PCA"}
 ML_SUPPORTED_SERVICE_IDS = set(SERVICE_METRIC_SCOPE)
 
 # Human-facing app version. Bump on meaningful UI/logic releases.
-APP_VERSION = "1.5.1"
+APP_VERSION = "1.5.2"
 
 # Rule-engine logic version (bump when the factor-matching logic changes).
 RULE_ENGINE_VERSION = "1.0.0"
@@ -2161,11 +2161,48 @@ if state_in:
             "be waking up). Refresh in a moment to try again."
         )
     else:
-        st.info(
-            f"No comparable {service_label} / {facility_type_in} projects on record "
-            f"in **{state_in}** in the last 3 years — the same-state sample is thin, "
-            "so lean on the broader comparables above."
+        # The exact service + property-type combo has no history in this state
+        # (common for thin type/state pairs, e.g. PCA Debt + Healthcare in DC).
+        # Widen to the same service in this state across ALL property types so the
+        # location panel still gives a useful local price reference instead of an
+        # empty result — selected-type matches (if any) are floated to the top.
+        state_any_type = load_comparables_resilient(
+            selected_service_id,
+            facility_type_in,
+            building_area=float(building_area_in or 0),
+            land_area=float(land_area_in or 0),
+            uses_building_sf=bool(service_uses_building_sf),
+            min_margin=0.42 if high_margin_only else None,
+            match_primary_type=False,
+            prefer_primary_match=True,
+            state=state_in,
+            match_state=True,
+            limit=COMPARABLES_STATS_LIMIT,
         )
+        if state_any_type is not None and not state_any_type.empty:
+            st.caption(
+                f"No **{facility_type_in}** {service_label} jobs on record in "
+                f"**{state_in}**, so this widens to **all property types** for "
+                f"{service_label} in {state_in}"
+                + (" · margin > 42% only" if high_margin_only else "")
+                + " — location-matched market pricing when the exact type is thin."
+            )
+            _render_comps(state_any_type, show_property_type=True)
+            st.caption(
+                f"Same service in **{state_in}**, any property type — the **Property "
+                "type** column shows what each job was, with "
+                f"{facility_type_in} matches (if any) floated to the top."
+            )
+        elif state_any_type is None:
+            st.warning(
+                f"Couldn't load {state_in} comparables right now (the data service "
+                "may be waking up). Refresh in a moment to try again."
+            )
+        else:
+            st.info(
+                f"No comparable {service_label} projects on record in **{state_in}** "
+                "in the last 3 years — lean on the broader comparables above."
+            )
 
 
 with st.expander("Input snapshot"):
