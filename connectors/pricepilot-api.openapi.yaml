@@ -480,9 +480,11 @@ definitions:
         description: |
           Base fee (USD). Optional — when omitted, the engine uses the
           service default (PCA Equity $4,000, ESA $2,200, Zoning $2,500,
-          PCA Debt $2,400).
+          PCA Debt $2,400). Hidden from the agent (x-ms-visibility internal)
+          so it is never collected/prompted; the engine applies the default.
         example: 2400.0
         x-ms-summary: Base fee (USD)
+        x-ms-visibility: internal
       tat:
         type: integer
         description: Turnaround time in business days
@@ -570,9 +572,13 @@ definitions:
         x-ms-summary: Client type
       is_rfp:
         type: boolean
-        description: Force RFP regardless of TAT rule
+        description: |
+          Force RFP regardless of TAT rule. Hidden from the agent
+          (x-ms-visibility internal) so it is never collected/prompted; the
+          engine decides RFP from the turnaround rules.
         default: false
         x-ms-summary: Force RFP
+        x-ms-visibility: internal
 
   QuoteResponse:
     type: object
