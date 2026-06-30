@@ -165,7 +165,7 @@ SERVICE_METRIC_SCOPE = {1: "Equity PCA", 2: "Phase I ESA", 4: "Debt PCA"}
 ML_SUPPORTED_SERVICE_IDS = set(SERVICE_METRIC_SCOPE)
 
 # Human-facing app version. Bump on meaningful UI/logic releases.
-APP_VERSION = "1.8.0"
+APP_VERSION = "1.9.0"
 
 # Rule-engine logic version (bump when the factor-matching logic changes).
 RULE_ENGINE_VERSION = "1.0.0"
@@ -2667,6 +2667,103 @@ else:
         "🔜 **Coming soon.** Enter a **Project address** in the Location & risk "
         "column and this will check for prior work at the same site (within "
         "~10 m), once geocoding and past-project coordinates are available."
+    )
+
+
+# Suggested price (synthesis) — a single bottom-line recommendation that blends the
+# rule-based and ML estimates, anchors them to the comparable market median, and
+# enforces a minimum-margin floor so the tool never suggests an unprofitable fee.
+# Fully transparent: the inputs and adjustments are spelled out under the number.
+st.markdown("---")
+st.markdown("## 💵 Suggested price")
+
+_rule_fee = (
+    float(result["total_fee"]) if isinstance(result["total_fee"], (int, float)) else None
+)
+_ml_fee = float(ml_predicted_fee) if ml_predicted_fee else None
+
+if _rule_fee is None and _ml_fee is None:
+    st.warning(
+        "This configuration is flagged **RFP** (request for proposal) — it falls "
+        "outside the automated pricing rules, so there's no single suggested price. "
+        "Price it manually, using the comparables and pricing intelligence above as "
+        "a guide."
+    )
+else:
+    _bench = load_fee_benchmark(selected_service_id, facility_type_in)
+    _has_bench = bool(_bench and _bench.get("n"))
+    _market_median = _bench.get("median_fee") if _has_bench else None
+    _est_cost = _bench.get("median_cost") if _has_bench else None
+
+    # Blend the available model estimates, then pull 25% toward the market median
+    # (when known) to keep the recommendation grounded in real awarded fees.
+    _models = [f for f in (_rule_fee, _ml_fee) if f and f > 0]
+    _base = sum(_models) / len(_models)
+    _recommended = (0.75 * _base + 0.25 * _market_median) if _market_median else _base
+
+    # Minimum-margin floor: never recommend below the fee needed for a 35% margin,
+    # given the estimated job cost.
+    _MIN_MARGIN = 0.35
+    _floor = _est_cost / (1 - _MIN_MARGIN) if _est_cost and _est_cost > 0 else None
+    _floored = bool(_floor and _recommended < _floor)
+    if _floored:
+        _recommended = _floor
+
+    # Round to the nearest $50 for a clean, quotable number.
+    _recommended = round(_recommended / 50.0) * 50.0
+
+    # Defensible band from the spread of the signals we have.
+    _signals = [f for f in (_rule_fee, _ml_fee, _market_median) if f and f > 0]
+    _low = min(_signals + [_recommended])
+    _high = max(_signals + [_recommended])
+
+    _sp1, _sp2 = st.columns([1, 1.5])
+    with _sp1:
+        st.metric("Recommended fee", f"${_recommended:,.0f}")
+        st.caption(f"Defensible range **${_low:,.0f} – ${_high:,.0f}**")
+    with _sp2:
+        _bits = []
+        if _rule_fee:
+            _bits.append(f"rule-based **${_rule_fee:,.0f}**")
+        if _ml_fee:
+            _bits.append(f"ML **${_ml_fee:,.0f}**")
+        if _market_median:
+            _bits.append(f"market median **${_market_median:,.0f}**")
+        st.markdown("Blended from " + ", ".join(_bits) + ".")
+        if _est_cost and _recommended:
+            _im = (_recommended - _est_cost) / _recommended
+            st.markdown(
+                f"Implied margin at this fee: **{_im * 100:.0f}%** "
+                f"(est. cost ${_est_cost:,.0f})."
+            )
+        if _floored:
+            st.markdown(
+                f"⚠ Raised to protect a **{int(_MIN_MARGIN * 100)}%** minimum margin."
+            )
+        if client_name_in and _market_median:
+            _cb2 = load_fee_benchmark(
+                selected_service_id, facility_type_in, client_name=client_name_in
+            )
+            if _cb2 and _cb2.get("n") and _cb2.get("median_fee"):
+                _cdelta = (_cb2["median_fee"] - _market_median) / _market_median * 100
+                _dirn = "above" if _cdelta > 0 else "below" if _cdelta < 0 else "in line with"
+                st.markdown(
+                    f"💡 **{client_name_in}** historically pays **{abs(_cdelta):.0f}% "
+                    f"{_dirn}** market — weigh this when finalizing."
+                )
+
+    if _rule_fee and _ml_fee:
+        _div = abs(_rule_fee - _ml_fee) / max(_rule_fee, _ml_fee) * 100
+        if _div >= 20:
+            st.caption(
+                f"⚠ Rule-based and ML estimates differ by {_div:.0f}% — the "
+                "recommendation splits the difference, but treat it as a starting "
+                "point and apply deal judgment."
+            )
+    st.caption(
+        "Guidance figure: blends the rule-based and ML estimates, anchors to "
+        "comparable awarded fees, and enforces a minimum-margin floor. It doesn't "
+        "replace deal judgment, scope nuances, or client-specific terms."
     )
 
 
