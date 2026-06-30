@@ -165,7 +165,7 @@ SERVICE_METRIC_SCOPE = {1: "Equity PCA", 2: "Phase I ESA", 4: "Debt PCA"}
 ML_SUPPORTED_SERVICE_IDS = set(SERVICE_METRIC_SCOPE)
 
 # Human-facing app version. Bump on meaningful UI/logic releases.
-APP_VERSION = "1.9.1"
+APP_VERSION = "1.10.0"
 
 # Rule-engine logic version (bump when the factor-matching logic changes).
 RULE_ENGINE_VERSION = "1.0.0"
@@ -1999,7 +1999,7 @@ st.caption(
     f"**{service_label} / {facility_type_in}**."
 )
 _pi_margin, _pi_client, _pi_trend, _pi_rush = st.tabs(
-    ["💰 Margin check", "📍 Client price position", "📈 Fee trend", "⚡ Rush premium"]
+    ["💰 Margin check", "📍 Client price & sensitivity", "📈 Fee trend", "⚡ Rush premium"]
 )
 
 _rule_total = (
@@ -2163,6 +2163,47 @@ with _pi_client:
             st.caption(
                 f"**{client_name_in}** typically pays **{abs(_pct):.0f}% {_dir}** the "
                 f"market on {service_label} / {facility_type_in}. Use it to anchor the quote."
+            )
+
+            # Inferred price sensitivity: combine how this client's fees AND the
+            # margins we earn on them compare to the market. Below-market fees and/or
+            # thinner margins ⇒ a tougher (price-sensitive) buyer; premiums and fatter
+            # margins ⇒ premium-tolerant. A posture signal, not true elasticity.
+            st.markdown("---")
+            _cm = _cb.get("median_margin")
+            _mm = _mb.get("median_margin")
+            _score = (1 if _pct <= -5 else -1 if _pct >= 5 else 0)
+            _margin_gap = (_cm - _mm) if (_cm is not None and _mm is not None) else None
+            if _margin_gap is not None:
+                _score += 1 if _margin_gap <= -0.05 else -1 if _margin_gap >= 0.05 else 0
+            if _score >= 1:
+                _slabel, _semoji = "Price-sensitive", "🟠"
+                _shint = (
+                    "negotiates hard — defend the fee on value/scope and avoid "
+                    "over-discounting."
+                )
+            elif _score <= -1:
+                _slabel, _semoji = "Premium-tolerant", "🟢"
+                _shint = (
+                    "accepts above-market pricing — there's room to quote toward the "
+                    "higher end of the range."
+                )
+            else:
+                _slabel, _semoji = "Market-rate", "🟡"
+                _shint = "prices roughly in line with the market — anchor to the median."
+            st.markdown(f"**Price sensitivity: {_semoji} {_slabel}**")
+            _fee_word = "below" if _pct < 0 else "above" if _pct > 0 else "at"
+            _ev = [f"pays **{abs(_pct):.0f}% {_fee_word} market**"]
+            if _margin_gap is not None:
+                _mg_word = "below" if _margin_gap < 0 else "above" if _margin_gap > 0 else "at"
+                _ev.append(
+                    f"we earn **{abs(_margin_gap) * 100:.0f} pts {_mg_word}**-market margin "
+                    f"on them ({(_cm or 0) * 100:.0f}% vs {(_mm or 0) * 100:.0f}%)"
+                )
+            st.caption("Signals: " + "; ".join(_ev) + f". → {_shint}")
+            st.caption(
+                "Inferred from historical awarded fees and earned margins — a posture "
+                "signal, **not** true price elasticity (which needs win/loss data)."
             )
 
 with _pi_trend:
