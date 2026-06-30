@@ -165,7 +165,7 @@ SERVICE_METRIC_SCOPE = {1: "Equity PCA", 2: "Phase I ESA", 4: "Debt PCA"}
 ML_SUPPORTED_SERVICE_IDS = set(SERVICE_METRIC_SCOPE)
 
 # Human-facing app version. Bump on meaningful UI/logic releases.
-APP_VERSION = "1.9.0"
+APP_VERSION = "1.9.1"
 
 # Rule-engine logic version (bump when the factor-matching logic changes).
 RULE_ENGINE_VERSION = "1.0.0"
@@ -907,6 +907,64 @@ def load_fee_benchmark(
         "median_fee": _f(row.get("median_fee")),
         "median_cost": _f(row.get("median_cost")),
     }
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_fee_benchmark_sized(
+    service_id: int,
+    primary_type: str,
+    *,
+    size_col: str = "",
+    target_size: float = 0.0,
+    size_band: float = 0.35,
+    min_n: int = 20,
+) -> dict | None:
+    """Size-aware fee/margin/cost benchmark: restrict to jobs of this service /
+    property type whose size is within ±`size_band` of `target_size`, so "typical
+    cost" reflects jobs of similar scale. Falls back to the type-level benchmark
+    when the size-matched slice is thinner than `min_n`. The returned dict carries
+    a "scope" of "size" (size-matched) or "type" (fell back), plus the band used."""
+    if target_size and target_size > 0 and size_col:
+        lo = target_size * (1 - size_band)
+        hi = target_size * (1 + size_band)
+        where = (
+            _pi_where(service_id, primary_type)
+            + f' AND TRY_TO_DOUBLE("{size_col}") BETWEEN {lo} AND {hi}'
+        )
+        sql = (
+            'SELECT COUNT(*) AS "n", '
+            'MEDIAN(TRY_TO_DOUBLE("service_margin")) AS "median_margin", '
+            'MEDIAN(TRY_TO_DOUBLE("fee")) AS "median_fee", '
+            'MEDIAN(TRY_TO_DOUBLE("fee") * (1 - TRY_TO_DOUBLE("service_margin"))) AS "median_cost" '
+            f"FROM {COMPARABLE_PROJECTS_TABLE} WHERE {where}"
+        )
+        try:
+            df = query_data(sql)
+        except Exception:
+            df = None
+        if df is not None and not df.empty:
+            def _f(x: Any) -> float | None:
+                v = pd.to_numeric(x, errors="coerce")
+                return float(v) if pd.notna(v) else None
+
+            row = df.iloc[0]
+            n = int(pd.to_numeric(row.get("n"), errors="coerce") or 0)
+            if n >= min_n:
+                return {
+                    "n": n,
+                    "median_margin": _f(row.get("median_margin")),
+                    "median_fee": _f(row.get("median_fee")),
+                    "median_cost": _f(row.get("median_cost")),
+                    "scope": "size",
+                    "band": size_band,
+                }
+
+    base = load_fee_benchmark(service_id, primary_type)
+    if base is None:
+        return None
+    out = dict(base)
+    out["scope"] = "type"
+    return out
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -1950,8 +2008,32 @@ _rule_total = (
     else None
 )
 
+# Size dimension this service prices on, used to make the margin/cost benchmark
+# reflect jobs of a similar scale rather than the whole service/property type.
+_pi_size_col = "building_area" if service_uses_building_sf else "land_acreage"
+_pi_target_size = float(
+    (building_area_in if service_uses_building_sf else land_area_in) or 0
+)
+
+
+def _bench_scope_note(bench: dict) -> str:
+    """Human note describing whether a benchmark is size-matched or fell back to
+    the whole service / property type."""
+    if bench.get("scope") == "size":
+        _unit = "SF" if service_uses_building_sf else "acres"
+        _pct = int(round(bench.get("band", 0.35) * 100))
+        return (
+            f"similar-size jobs (±{_pct}% of {_pi_target_size:,.0f} {_unit}), "
+            f"n={bench['n']:,}"
+        )
+    return f"all {service_label} / {facility_type_in} jobs, n={bench['n']:,}"
+
+
 with _pi_margin:
-    _bm = load_fee_benchmark(selected_service_id, facility_type_in)
+    _bm = load_fee_benchmark_sized(
+        selected_service_id, facility_type_in,
+        size_col=_pi_size_col, target_size=_pi_target_size,
+    )
     if _bm is None:
         st.caption("Couldn't load margin benchmarks right now — refresh in a moment.")
     elif not _bm.get("n"):
@@ -1962,22 +2044,30 @@ with _pi_margin:
         _est_cost = _bm.get("median_cost")
         _med_margin = _bm.get("median_margin")
         _med_fee = _bm.get("median_fee")
+        _scope_note = _bench_scope_note(_bm)
+        if _bm.get("scope") == "size":
+            st.caption(f"Benchmarked against **{_scope_note}**.")
+        else:
+            st.caption(
+                f"Benchmarked against **{_scope_note}** — too few similar-size jobs "
+                "to narrow by scale, so this is the type-level median."
+            )
         _mc = st.columns(3)
         if _med_margin is not None:
             _mc[0].metric(
                 "Typical margin", f"{_med_margin * 100:.0f}%",
-                help=f"Median service gross margin across {_bm['n']:,} comparable jobs.",
+                help=f"Median service gross margin across {_scope_note}.",
             )
         if _med_fee is not None:
             _mc[1].metric(
                 "Typical fee", f"${_med_fee:,.0f}",
-                help="Median awarded fee for comparable jobs.",
+                help=f"Median awarded fee across {_scope_note}.",
             )
         if _est_cost is not None:
             _mc[2].metric(
                 "Est. job cost", f"${_est_cost:,.0f}",
-                help="Median implied cost (fee × (1 − margin)) for comparable jobs — "
-                "a proxy for what a job like this typically costs to deliver.",
+                help="Median implied cost (fee × (1 − margin)) across "
+                f"{_scope_note} — a proxy for what a job like this costs to deliver.",
             )
 
         if _est_cost and _est_cost > 0:
@@ -2690,10 +2780,14 @@ if _rule_fee is None and _ml_fee is None:
         "a guide."
     )
 else:
-    _bench = load_fee_benchmark(selected_service_id, facility_type_in)
+    _bench = load_fee_benchmark_sized(
+        selected_service_id, facility_type_in,
+        size_col=_pi_size_col, target_size=_pi_target_size,
+    )
     _has_bench = bool(_bench and _bench.get("n"))
     _market_median = _bench.get("median_fee") if _has_bench else None
     _est_cost = _bench.get("median_cost") if _has_bench else None
+    _bench_scope = _bench.get("scope") if _has_bench else None
 
     # Blend the available model estimates, then pull 25% toward the market median
     # (when known) to keep the recommendation grounded in real awarded fees.
@@ -2728,7 +2822,8 @@ else:
         if _ml_fee:
             _bits.append(f"ML **${_ml_fee:,.0f}**")
         if _market_median:
-            _bits.append(f"market median **${_market_median:,.0f}**")
+            _mm_lbl = "similar-size market median" if _bench_scope == "size" else "market median"
+            _bits.append(f"{_mm_lbl} **${_market_median:,.0f}**")
         st.markdown("Blended from " + ", ".join(_bits) + ".")
         if _est_cost and _recommended:
             _im = (_recommended - _est_cost) / _recommended
@@ -2740,12 +2835,19 @@ else:
             st.markdown(
                 f"⚠ Raised to protect a **{int(_MIN_MARGIN * 100)}%** minimum margin."
             )
-        if client_name_in and _market_median:
+        if client_name_in:
+            # Client-vs-market is compared at the type level (stable) rather than
+            # the size-matched slice, which would be too thin per client.
             _cb2 = load_fee_benchmark(
                 selected_service_id, facility_type_in, client_name=client_name_in
             )
-            if _cb2 and _cb2.get("n") and _cb2.get("median_fee"):
-                _cdelta = (_cb2["median_fee"] - _market_median) / _market_median * 100
+            _mk2 = load_fee_benchmark(selected_service_id, facility_type_in)
+            if (
+                _cb2 and _cb2.get("n") and _cb2.get("median_fee")
+                and _mk2 and _mk2.get("median_fee")
+            ):
+                _mkmed = _mk2["median_fee"]
+                _cdelta = (_cb2["median_fee"] - _mkmed) / _mkmed * 100
                 _dirn = "above" if _cdelta > 0 else "below" if _cdelta < 0 else "in line with"
                 st.markdown(
                     f"💡 **{client_name_in}** historically pays **{abs(_cdelta):.0f}% "
