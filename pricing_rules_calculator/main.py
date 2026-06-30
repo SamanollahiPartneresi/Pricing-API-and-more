@@ -17,8 +17,9 @@ import pandas as pd
 import requests
 import streamlit as st
 
-# ### INJECTED_CODE ####
-# ### QUERY DATA FUNCTION ####
+# Direct warehouse access via the Keboola Query Service. Reads BRANCH_ID /
+# WORKSPACE_ID / KBC_TOKEN / KBC_URL (data-app secrets / auto-injected on the
+# deployed app).
 
 _RESULTS_PAGE_SIZE = 500
 
@@ -205,12 +206,12 @@ APP_TO_HIST_PROPERTY = {
     "Seniors Housing": "Senior Housing",
 }
 
-# ### PRICING_ENGINE ####
 # The rule engine is defined once in the repo-root `pricing_engine.py` (the same
-# module the Flask API imports). For local dev / lint / tests we import it here;
-# the deploy build (`_build_deploy_source.py`) REPLACES this entire block with
-# the inlined body of pricing_engine.py, because the Streamlit data app ships as
-# a single inline source file with no repo to import from.
+# module the Flask API imports) — the single source of truth for rule-based
+# pricing. This app is deployed straight from this Git repo (Keboola clones the
+# whole repo and runs this file as the entrypoint), so the import resolves at
+# runtime; the sys.path insert points Python at the repo root for both local dev
+# and the deployed app.
 import sys as _sys  # noqa: E402
 _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pricing_engine import (  # noqa: E402,F401
@@ -225,7 +226,6 @@ from pricing_engine import (  # noqa: E402,F401
     UNIT_INSPECTION_FACILITY_TYPE,
     calculate,
 )
-# ### END_PRICING_ENGINE ####
 
 
 # ML API integration (PricePilot Flask app, deployed as a Keboola python-js data app)

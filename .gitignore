@@ -13,6 +13,3 @@ venv/
 machine_learning/pricepilot_fee_model.pkl
 machine_learning/fee_model_metrics.json
 machine_learning/fee_model_feature_importance.csv
-
-# Generated Streamlit deploy bundle — rebuilt by _build_deploy_source.py
-pricing_rules_calculator/_deploy_source.py
