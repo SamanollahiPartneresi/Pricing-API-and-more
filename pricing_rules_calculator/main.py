@@ -165,7 +165,7 @@ SERVICE_METRIC_SCOPE = {1: "Equity PCA", 2: "Phase I ESA", 4: "Debt PCA"}
 ML_SUPPORTED_SERVICE_IDS = set(SERVICE_METRIC_SCOPE)
 
 # Human-facing app version. Bump on meaningful UI/logic releases.
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.5.0"
 
 # Rule-engine logic version (bump when the factor-matching logic changes).
 RULE_ENGINE_VERSION = "1.0.0"
@@ -667,6 +667,8 @@ def load_comparables(
     match_service: bool = True,
     match_primary_type: bool = True,
     prefer_primary_match: bool = False,
+    state: str = "",
+    match_state: bool = False,
     limit: int = 6,
 ) -> pd.DataFrame:
     """Return the past projects most similar to the user's inputs: same service
@@ -698,6 +700,10 @@ def load_comparables(
             'COALESCE(NULLIF(TRIM("client_name"), \'\'), NULLIF(TRIM("company_name"), \'\')) <> '
             f"'{_sql_quote(exclude_client)}'"
         )
+    if match_state and state:
+        where.append(
+            f"UPPER(TRIM(\"state\")) = '{_sql_quote(state.strip().upper())}'"
+        )
     size_col = "building_area" if uses_building_sf else "land_acreage"
     target = building_area if uses_building_sf else land_area
 
@@ -713,6 +719,13 @@ def load_comparables(
         order_clauses.append(
             "CASE WHEN \"secondary_property_type\" = "
             f"'{_sql_quote(secondary_type)}' THEN 0 ELSE 1 END"
+        )
+    if state and not match_state:
+        # Float same-state projects to the top so location informs similarity
+        # (a 50k SF office in NY ranks above an identical one across the country).
+        order_clauses.append(
+            "CASE WHEN UPPER(TRIM(\"state\")) = "
+            f"'{_sql_quote(state.strip().upper())}' THEN 0 ELSE 1 END"
         )
     if target and target > 0:
         # Storage columns come back as strings; cast before the distance math and
@@ -764,6 +777,42 @@ def load_comparables_resilient(*args: Any, attempts: int = 3, **kwargs: Any):
     if last_exc is not None:
         print(f"[comparables] all {attempts} attempts failed: {last_exc}")
     return None
+
+
+# Canonical jurisdiction codes used to clean the free-text `state` column, which
+# contains plenty of junk (street addresses, numeric codes, single letters, and
+# non-US 2-letter codes). The location dropdown only offers values in this set.
+_VALID_STATE_CODES = frozenset(
+    # US states + DC
+    "AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO "
+    "MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC "
+    # US territories
+    "PR GU VI AS MP "
+    # Canadian provinces / territories
+    "AB BC MB NB NL NS NT NU ON PE QC SK YT".split()
+)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_states() -> list[str]:
+    """Distinct, valid state/province codes present in `comparable_projects`,
+    alphabetical — so the location dropdown only offers real jurisdictions that
+    can actually match a project (the raw column has addresses / numeric / junk
+    values, filtered out via `_VALID_STATE_CODES`). Returns an empty list on any
+    failure (the dropdown then shows only the blank option, location ranking is
+    skipped)."""
+    try:
+        df = query_data(
+            'SELECT DISTINCT UPPER(TRIM("state")) AS "state" '
+            f"FROM {COMPARABLE_PROJECTS_TABLE} "
+            "WHERE TRIM(COALESCE(\"state\", '')) <> ''"
+        )
+    except Exception:
+        return []
+    if df is None or df.empty or "state" not in df.columns:
+        return []
+    vals = {str(s).strip().upper() for s in df["state"].tolist() if str(s).strip()}
+    return sorted(vals & _VALID_STATE_CODES)
 
 
 def fee_hint_caption(
@@ -1285,6 +1334,17 @@ with col3:
         ["", "US", "CA"],
         index=0,
         help="Project country. Applies an international/region adjustment when set.",
+    )
+
+    state_in = st.selectbox(
+        "State / region (for comparables)",
+        [""] + load_states(),
+        index=0,
+        help=(
+            "Project state. Used to surface location-matched past projects and to "
+            "float same-state jobs up in the comparables below. Does not change the "
+            "rule-based or ML fee — it's a sales/positioning aid."
+        ),
     )
 
     travel_options = factors_df[factors_df["category"] == "Travel Difficulty"].copy()
@@ -1906,6 +1966,7 @@ if client_name_in:
         uses_building_sf=bool(service_uses_building_sf),
         match_primary_type=False,
         prefer_primary_match=True,
+        state=state_in,
         limit=COMPARABLES_STATS_LIMIT,
     )
 
@@ -2008,6 +2069,7 @@ if client_name_in:
         land_area=float(land_area_in or 0),
         uses_building_sf=bool(service_uses_building_sf),
         min_margin=0.42 if high_margin_only else None,
+        state=state_in,
         limit=COMPARABLES_STATS_LIMIT,
     )
     if other_comps is not None and not other_comps.empty:
@@ -2033,6 +2095,7 @@ else:
         land_area=float(land_area_in or 0),
         uses_building_sf=bool(service_uses_building_sf),
         min_margin=0.42 if high_margin_only else None,
+        state=state_in,
         limit=COMPARABLES_STATS_LIMIT,
     )
 
@@ -2058,6 +2121,51 @@ else:
         )
 
 
+# Location-matched market: same service + property type located in the selected
+# state, across all clients — the most direct "what do projects like this go for
+# in this location?" reference. Only shown when a state is chosen, and always
+# floated to its own clearly-labelled table so location pricing is explicit.
+if state_in:
+    st.markdown("---")
+    st.markdown(f"#### 📍 Projects in {state_in}")
+    state_comps = load_comparables_resilient(
+        selected_service_id,
+        facility_type_in,
+        secondary_type=secondary_in,
+        building_area=float(building_area_in or 0),
+        land_area=float(land_area_in or 0),
+        uses_building_sf=bool(service_uses_building_sf),
+        min_margin=0.42 if high_margin_only else None,
+        state=state_in,
+        match_state=True,
+        limit=COMPARABLES_STATS_LIMIT,
+    )
+    if state_comps is not None and not state_comps.empty:
+        st.caption(
+            f"Real {service_label} / {facility_type_in} projects located in "
+            f"**{state_in}** from the last 3 years, ranked by closeness to your "
+            "inputs"
+            + (" · margin > 42% only" if high_margin_only else "")
+            + " — location-matched market pricing for this quote."
+        )
+        _render_comps(state_comps)
+        st.caption(
+            f"Same service and property type, restricted to **{state_in}**. Use this "
+            "alongside the broader comparables above to factor location into the quote."
+        )
+    elif state_comps is None:
+        st.warning(
+            f"Couldn't load {state_in} comparables right now (the data service may "
+            "be waking up). Refresh in a moment to try again."
+        )
+    else:
+        st.info(
+            f"No comparable {service_label} / {facility_type_in} projects on record "
+            f"in **{state_in}** in the last 3 years — the same-state sample is thin, "
+            "so lean on the broader comparables above."
+        )
+
+
 with st.expander("Input snapshot"):
     st.json(
         {
@@ -2070,6 +2178,7 @@ with st.expander("Input snapshot"):
                 "customer_type": customer_type_in,
                 "client_name": client_name_in,
                 "country_code": country_in,
+                "state": state_in,
                 "building_area": building_area_in,
                 "land_area": land_area_in,
                 "number_of_stories": number_of_stories_in,
