@@ -165,7 +165,7 @@ SERVICE_METRIC_SCOPE = {1: "Equity PCA", 2: "Phase I ESA", 4: "Debt PCA"}
 ML_SUPPORTED_SERVICE_IDS = set(SERVICE_METRIC_SCOPE)
 
 # Human-facing app version. Bump on meaningful UI/logic releases.
-APP_VERSION = "1.7.0"
+APP_VERSION = "1.8.0"
 
 # Rule-engine logic version (bump when the factor-matching logic changes).
 RULE_ENGINE_VERSION = "1.0.0"
@@ -849,6 +849,115 @@ def load_service_counts(
         return None
     if not df.empty:
         df["service_id"] = pd.to_numeric(df["service_id"], errors="coerce")
+        df["n"] = pd.to_numeric(df["n"], errors="coerce")
+    return df
+
+
+def _pi_where(service_id: int, primary_type: str, client_name: str = "") -> str:
+    """Shared WHERE for the pricing-intelligence aggregates: scope to a service +
+    property type (and optional client), with valid positive fees only."""
+    hist = APP_TO_HIST_PROPERTY.get(primary_type, primary_type)
+    where = [
+        f'"order_form_service_id" = {int(service_id)}',
+        f"\"primary_property_type\" = '{_sql_quote(hist)}'",
+        'TRY_TO_DOUBLE("fee") > 0',
+    ]
+    if client_name:
+        where.append(
+            'COALESCE(NULLIF(TRIM("client_name"), \'\'), NULLIF(TRIM("company_name"), \'\')) = '
+            f"'{_sql_quote(client_name)}'"
+        )
+    return " AND ".join(where)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_fee_benchmark(
+    service_id: int, primary_type: str, *, client_name: str = ""
+) -> dict | None:
+    """Median fee, margin and implied cost for a service / property-type scope
+    (optionally a single client). Implied cost = fee * (1 - service_margin),
+    median across jobs — a data-driven proxy for the typical cost of a job like
+    this. Returns None on a transient failure, {"n": 0} when there's no history."""
+    sql = (
+        'SELECT COUNT(*) AS "n", '
+        'MEDIAN(TRY_TO_DOUBLE("service_margin")) AS "median_margin", '
+        'MEDIAN(TRY_TO_DOUBLE("fee")) AS "median_fee", '
+        'MEDIAN(TRY_TO_DOUBLE("fee") * (1 - TRY_TO_DOUBLE("service_margin"))) AS "median_cost" '
+        f"FROM {COMPARABLE_PROJECTS_TABLE} "
+        f"WHERE {_pi_where(service_id, primary_type, client_name)}"
+    )
+    try:
+        df = query_data(sql)
+    except Exception:
+        return None
+    if df is None or df.empty:
+        return None
+
+    def _f(x: Any) -> float | None:
+        v = pd.to_numeric(x, errors="coerce")
+        return float(v) if pd.notna(v) else None
+
+    row = df.iloc[0]
+    n = int(pd.to_numeric(row.get("n"), errors="coerce") or 0)
+    if n == 0:
+        return {"n": 0}
+    return {
+        "n": n,
+        "median_margin": _f(row.get("median_margin")),
+        "median_fee": _f(row.get("median_fee")),
+        "median_cost": _f(row.get("median_cost")),
+    }
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_fee_trend(service_id: int, primary_type: str) -> pd.DataFrame | None:
+    """Median fee per month for a service / property type, oldest first — powers
+    the fee-trend chart. None on transient failure, empty frame when no history."""
+    sql = (
+        'SELECT "created_month_label" AS "month", COUNT(*) AS "n", '
+        'MEDIAN(TRY_TO_DOUBLE("fee")) AS "median_fee" '
+        f"FROM {COMPARABLE_PROJECTS_TABLE} "
+        f"WHERE {_pi_where(service_id, primary_type)} "
+        'GROUP BY "created_month_label" ORDER BY "created_month_label"'
+    )
+    try:
+        df = query_data(sql)
+    except Exception:
+        return None
+    if df is None:
+        return None
+    if not df.empty:
+        df["median_fee"] = pd.to_numeric(df["median_fee"], errors="coerce")
+        df["n"] = pd.to_numeric(df["n"], errors="coerce")
+    return df
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_tat_premium(service_id: int, primary_type: str) -> pd.DataFrame | None:
+    """Median fee by turnaround band for a service / property type, so the rush
+    premium can be read straight off real history. None on transient failure."""
+    sql = (
+        "SELECT CASE "
+        "WHEN TRY_TO_DOUBLE(\"turn_around_time\") <= 5 THEN '1–5 days' "
+        "WHEN TRY_TO_DOUBLE(\"turn_around_time\") <= 10 THEN '6–10 days' "
+        "WHEN TRY_TO_DOUBLE(\"turn_around_time\") <= 15 THEN '11–15 days' "
+        "WHEN TRY_TO_DOUBLE(\"turn_around_time\") <= 20 THEN '16–20 days' "
+        "ELSE '21+ days' END AS \"tat_band\", "
+        'COUNT(*) AS "n", MEDIAN(TRY_TO_DOUBLE("fee")) AS "median_fee", '
+        'MIN(TRY_TO_DOUBLE("turn_around_time")) AS "_ord" '
+        f"FROM {COMPARABLE_PROJECTS_TABLE} "
+        f"WHERE {_pi_where(service_id, primary_type)} "
+        'AND TRY_TO_DOUBLE("turn_around_time") > 0 '
+        'GROUP BY "tat_band" ORDER BY "_ord"'
+    )
+    try:
+        df = query_data(sql)
+    except Exception:
+        return None
+    if df is None:
+        return None
+    if not df.empty:
+        df["median_fee"] = pd.to_numeric(df["median_fee"], errors="coerce")
         df["n"] = pd.to_numeric(df["n"], errors="coerce")
     return df
 
@@ -1820,6 +1929,217 @@ with ml_col:
                     ),
                 },
             )
+
+
+# Pricing intelligence — data-driven context for the quote, all computed live from
+# comparable history: implied margin at the proposed fee, how this client prices
+# vs. the market, the fee trend over time, and the historical rush premium.
+st.markdown("---")
+st.markdown("### 📊 Pricing intelligence")
+st.caption(
+    "Live context for this quote, computed from comparable history for "
+    f"**{service_label} / {facility_type_in}**."
+)
+_pi_margin, _pi_client, _pi_trend, _pi_rush = st.tabs(
+    ["💰 Margin check", "📍 Client price position", "📈 Fee trend", "⚡ Rush premium"]
+)
+
+_rule_total = (
+    float(result["total_fee"])
+    if isinstance(result["total_fee"], (int, float))
+    else None
+)
+
+with _pi_margin:
+    _bm = load_fee_benchmark(selected_service_id, facility_type_in)
+    if _bm is None:
+        st.caption("Couldn't load margin benchmarks right now — refresh in a moment.")
+    elif not _bm.get("n"):
+        st.caption(
+            f"No {service_label} / {facility_type_in} history to benchmark margin against."
+        )
+    else:
+        _est_cost = _bm.get("median_cost")
+        _med_margin = _bm.get("median_margin")
+        _med_fee = _bm.get("median_fee")
+        _mc = st.columns(3)
+        if _med_margin is not None:
+            _mc[0].metric(
+                "Typical margin", f"{_med_margin * 100:.0f}%",
+                help=f"Median service gross margin across {_bm['n']:,} comparable jobs.",
+            )
+        if _med_fee is not None:
+            _mc[1].metric(
+                "Typical fee", f"${_med_fee:,.0f}",
+                help="Median awarded fee for comparable jobs.",
+            )
+        if _est_cost is not None:
+            _mc[2].metric(
+                "Est. job cost", f"${_est_cost:,.0f}",
+                help="Median implied cost (fee × (1 − margin)) for comparable jobs — "
+                "a proxy for what a job like this typically costs to deliver.",
+            )
+
+        if _est_cost and _est_cost > 0:
+            def _impl_margin(fee: float | None) -> float | None:
+                return (fee - _est_cost) / fee if fee and fee > 0 else None
+
+            _im_cols = st.columns(2)
+            _im_rule = _impl_margin(_rule_total)
+            if _im_rule is not None:
+                _im_cols[0].metric(
+                    "Est. margin @ rule-based fee", f"{_im_rule * 100:.0f}%",
+                    delta=(
+                        f"{(_im_rule - _med_margin) * 100:+.0f} pts vs typical"
+                        if _med_margin is not None else None
+                    ),
+                )
+            _im_ml = _impl_margin(float(ml_predicted_fee)) if ml_predicted_fee else None
+            if _im_ml is not None:
+                _im_cols[1].metric(
+                    "Est. margin @ ML fee", f"{_im_ml * 100:.0f}%",
+                    delta=(
+                        f"{(_im_ml - _med_margin) * 100:+.0f} pts vs typical"
+                        if _med_margin is not None else None
+                    ),
+                )
+
+            if _im_rule is not None and _med_margin is not None and _im_rule < _med_margin - 0.10:
+                st.warning(
+                    f"⚠ The rule-based fee implies a **{_im_rule * 100:.0f}%** margin — "
+                    f"well below the typical **{_med_margin * 100:.0f}%** for comparable "
+                    "jobs. Check whether the fee is too low."
+                )
+
+            _default_target = int(round((_med_margin or 0.45) * 100))
+            _tgt = st.slider(
+                "Target margin (%)", min_value=0, max_value=90,
+                value=min(max(_default_target, 0), 90), step=5,
+                help="Pick a target margin to see the fee needed to hit it, given the "
+                "estimated job cost.",
+            )
+            _fee_for = _est_cost / (1 - _tgt / 100) if _tgt < 100 else None
+            if _fee_for:
+                st.markdown(
+                    f"**Fee to hit a {_tgt}% margin: ${_fee_for:,.0f}** "
+                    f"(at the estimated ${_est_cost:,.0f} job cost)."
+                )
+        st.caption(
+            "Margin figures are **estimates** from comparable history (implied cost = "
+            "fee × (1 − margin)); the tool has no direct cost feed, so treat them as "
+            "guidance."
+        )
+
+with _pi_client:
+    if not client_name_in:
+        st.caption(
+            "Select a **client** above to compare what they typically pay vs. the market."
+        )
+    else:
+        _cb = load_fee_benchmark(selected_service_id, facility_type_in, client_name=client_name_in)
+        _mb = load_fee_benchmark(selected_service_id, facility_type_in)
+        if _cb is None or _mb is None:
+            st.caption("Couldn't load client price position right now — refresh in a moment.")
+        elif not _cb.get("n") or not _mb.get("n") or not _cb.get("median_fee") or not _mb.get("median_fee"):
+            st.caption(
+                f"Not enough {service_label} / {facility_type_in} history for "
+                f"**{client_name_in}** to compare against the market."
+            )
+        else:
+            _cf = _cb["median_fee"]
+            _mf = _mb["median_fee"]
+            _delta = _cf - _mf
+            _pct = (_delta / _mf * 100) if _mf else 0.0
+            _cc = st.columns(3)
+            _cc[0].metric(
+                f"{client_name_in[:18]} median", f"${_cf:,.0f}",
+                help=f"Median awarded fee across {_cb['n']:,} of this client's "
+                f"{service_label}/{facility_type_in} jobs.",
+            )
+            _cc[1].metric(
+                "Market median", f"${_mf:,.0f}",
+                help=f"Median across {_mb['n']:,} comparable jobs from all clients.",
+            )
+            _cc[2].metric(
+                "Client vs market", f"{_pct:+.0f}%",
+                delta=f"${_delta:+,.0f}", delta_color="off",
+            )
+            _dir = "above" if _delta > 0 else "below" if _delta < 0 else "in line with"
+            if _cb["n"] < 3:
+                st.caption(
+                    f"⚠ Only {_cb['n']} job(s) on record for this client — read the "
+                    "comparison with caution."
+                )
+            st.caption(
+                f"**{client_name_in}** typically pays **{abs(_pct):.0f}% {_dir}** the "
+                f"market on {service_label} / {facility_type_in}. Use it to anchor the quote."
+            )
+
+with _pi_trend:
+    _tr = load_fee_trend(selected_service_id, facility_type_in)
+    if _tr is None:
+        st.caption("Couldn't load the fee trend right now — refresh in a moment.")
+    elif _tr.empty:
+        st.caption(f"No {service_label} / {facility_type_in} history to chart.")
+    else:
+        _vals = _tr.dropna(subset=["median_fee"]).reset_index(drop=True)
+        st.line_chart(_vals.set_index("month")["median_fee"], height=240)
+        if len(_vals) >= 4:
+            _recent = float(_vals["median_fee"].tail(3).mean())
+            _prior = float(
+                _vals["median_fee"].iloc[-15:-12].mean()
+                if len(_vals) >= 15
+                else _vals["median_fee"].head(3).mean()
+            )
+            _chg = ((_recent - _prior) / _prior * 100) if _prior else 0.0
+            st.metric(
+                "Recent median fee (trailing 3 mo)", f"${_recent:,.0f}",
+                delta=f"{_chg:+.0f}% vs earlier",
+            )
+        st.caption(
+            f"Median awarded fee per month for {service_label} / {facility_type_in} — "
+            "a read on whether the market is drifting up or down."
+        )
+
+with _pi_rush:
+    _rp = load_tat_premium(selected_service_id, facility_type_in)
+    if _rp is None:
+        st.caption("Couldn't load the rush premium right now — refresh in a moment.")
+    elif _rp.empty:
+        st.caption(f"No {service_label} / {facility_type_in} turnaround history to analyze.")
+    else:
+        _rp2 = _rp.dropna(subset=["median_fee"]).copy()
+        if _rp2.empty:
+            st.caption("No usable turnaround history for this service / property type.")
+        else:
+            _base_row = _rp2.loc[_rp2["n"].idxmax()]
+            _base_fee = float(_base_row["median_fee"])
+            _base_band = str(_base_row["tat_band"])
+            _rp2["vs standard"] = _rp2["median_fee"].apply(
+                lambda f: f"{(f - _base_fee) / _base_fee * 100:+.0f}%" if _base_fee else "—"
+            )
+            _disp = _rp2[["tat_band", "n", "median_fee", "vs standard"]].rename(
+                columns={"tat_band": "Turnaround", "n": "Jobs", "median_fee": "Median fee"}
+            )
+            _disp["Median fee"] = _disp["Median fee"].apply(lambda f: f"${f:,.0f}")
+            st.dataframe(_disp, hide_index=True, width="stretch")
+            _sel = int(tat_in or 0)
+            _sel_band = (
+                "1–5 days" if _sel <= 5 else "6–10 days" if _sel <= 10
+                else "11–15 days" if _sel <= 15 else "16–20 days" if _sel <= 20
+                else "21+ days"
+            ) if _sel > 0 else None
+            if _sel_band:
+                st.caption(
+                    f"Your selected turnaround (**{_sel} days** → {_sel_band}) vs the "
+                    f"most common band (**{_base_band}**, ${_base_fee:,.0f} median). "
+                    "'vs standard' is the historical fee premium/discount per band."
+                )
+            else:
+                st.caption(
+                    "Median fee by turnaround band; 'vs standard' is relative to the "
+                    f"most common band (**{_base_band}**)."
+                )
 
 
 # Cross-sell — make the tool "smarter" by suggesting other services to offer this
